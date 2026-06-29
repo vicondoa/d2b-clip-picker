@@ -36,6 +36,16 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("--ipc-fd must be non-negative".into());
     }
 
+    let flags = unsafe { libc::fcntl(args.ipc_fd, libc::F_GETFD) };
+    if flags < 0 {
+        return Err(format!(
+            "--ipc-fd {} is not an open inherited file descriptor: {}",
+            args.ipc_fd,
+            std::io::Error::last_os_error()
+        )
+        .into());
+    }
+
     let stream = unsafe { UnixStream::from_raw_fd(args.ipc_fd) };
     let mut peer = IpcPeer::new(stream)?;
     peer.send_client_hello()?;
