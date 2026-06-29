@@ -31,10 +31,9 @@ pub fn run_picker(
                     break;
                 }
                 Ok(line) => {
-                    if serde_json::from_str::<ClipdFrame>(line.trim_end()).is_ok() {
-                        let _ = socket_closed_tx.send(());
-                        break;
-                    }
+                    let _ = serde_json::from_str::<ClipdFrame>(line.trim_end());
+                    let _ = socket_closed_tx.send(());
+                    break;
                 }
             }
         }
