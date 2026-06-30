@@ -3,6 +3,7 @@ use d2b_clip_picker::placement::Placement;
 use d2b_clip_picker::protocol::{IpcPeer, OpenRequest};
 use d2b_clip_picker::ui;
 use log::{debug, error};
+use std::env;
 use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
 
@@ -30,6 +31,8 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .format_timestamp_secs()
         .try_init()
         .ok();
+
+    force_headless_safe_gtk_defaults();
 
     let args = Args::parse();
     if args.ipc_fd < 0 {
@@ -73,4 +76,17 @@ fn choose_placement(request: &OpenRequest) -> Placement {
     }
 
     Placement::default()
+}
+
+fn force_headless_safe_gtk_defaults() {
+    if env::var_os("GDK_BACKEND").is_none() {
+        unsafe {
+            env::set_var("GDK_BACKEND", "wayland");
+        }
+    }
+    if env::var_os("GSK_RENDERER").is_none() {
+        unsafe {
+            env::set_var("GSK_RENDERER", "cairo");
+        }
+    }
 }
