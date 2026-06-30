@@ -36,7 +36,7 @@ pub enum PickerFrame {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ClipdFrame {
-    OpenRequest(OpenRequest),
+    OpenRequest(Box<OpenRequest>),
     Error {
         selected_protocol_version: Option<u16>,
         request_id: Option<String>,

@@ -75,7 +75,7 @@ fn fake_clipd_select_roundtrip() {
     server_reader.read_line(&mut hello).expect("hello line");
 
     let request = sample_request();
-    let frame = ClipdFrame::OpenRequest(request.clone());
+    let frame = ClipdFrame::OpenRequest(Box::new(request.clone()));
     writeln!(server, "{}", serde_json::to_string(&frame).expect("encode")).expect("write");
     let decoded = peer.read_clipd_frame().expect("open request");
     assert!(matches!(decoded, ClipdFrame::OpenRequest(_)));
@@ -105,7 +105,7 @@ fn fake_clipd_cancel_roundtrip() {
     writeln!(
         server,
         "{}",
-        serde_json::to_string(&ClipdFrame::OpenRequest(request.clone())).expect("encode")
+        serde_json::to_string(&ClipdFrame::OpenRequest(Box::new(request.clone()))).expect("encode")
     )
     .expect("write");
     peer.read_clipd_frame().expect("open request");

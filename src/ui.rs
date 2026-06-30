@@ -9,7 +9,7 @@ use gtk4::prelude::*;
 use gtk4::{Align, Orientation, gdk};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 use libadwaita::{self as adw, prelude::*};
-use log::warn;
+use log::{info, warn};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -25,21 +25,17 @@ pub fn run_picker(
     let tx = peer.tx_for_request(&request);
     let (socket_closed_tx, socket_closed_rx) = mpsc::channel();
     let mut reader = peer.into_reader();
-    std::thread::spawn(move || {
-        loop {
-            match read_bounded_line(&mut reader, MAX_OPEN_REQUEST_BYTES) {
-                Err(_) => {
-                    let _ = socket_closed_tx.send(());
-                    break;
-                }
-                Ok(line) => {
-                    let _ = serde_json::from_str::<ClipdFrame>(line.trim_end());
-                    let _ = socket_closed_tx.send(());
-                    break;
-                }
+    std::thread::spawn(
+        move || match read_bounded_line(&mut reader, MAX_OPEN_REQUEST_BYTES) {
+            Err(_) => {
+                let _ = socket_closed_tx.send(());
             }
-        }
-    });
+            Ok(line) => {
+                let _ = serde_json::from_str::<ClipdFrame>(line.trim_end());
+                let _ = socket_closed_tx.send(());
+            }
+        },
+    );
 
     let app: gtk4::Application = adw::Application::builder()
         .application_id("io.github.vicondoa.d2b_clip_picker")
@@ -110,7 +106,7 @@ fn create_window(
         }
         window.set_monitor(Some(monitor));
     }
-    warn!(
+    info!(
         "picker window placement x={} y={} overlay_width={} overlay_height={} output={:?}",
         placement.geometry.x,
         placement.geometry.y,
@@ -247,7 +243,7 @@ fn create_window(
             let activation_for_test = activation_for_test.clone();
             glib::idle_add_local_once(move || {
                 if let Some(candidate) = displayed_for_test.borrow().first() {
-                    warn!(
+                    info!(
                         "test-select-first mapped; selecting entry {}",
                         candidate.entry_id
                     );
@@ -566,10 +562,7 @@ fn destination_label(request: &OpenRequest) -> String {
 fn source_label(candidate: &Candidate) -> String {
     let realm = sanitize_preview(&candidate.source_realm, 48);
     match candidate.source_realm_kind {
-        RealmKind::Host => match candidate.source_attribution {
-            AttributionQuality::FocusedWindowGuess => format!("{realm} (best effort)"),
-            _ => realm,
-        },
+        RealmKind::Host => realm,
         RealmKind::Vm => format!("{realm} VM"),
         RealmKind::Unknown => realm,
     }
@@ -584,9 +577,9 @@ fn app_source_label(candidate: &Candidate) -> String {
     let app = sanitize_preview(app, 80);
     match candidate.source_attribution {
         AttributionQuality::ExactClient => format!("Exact source · {app}"),
-        AttributionQuality::FocusedWindowGuess => format!("Focused-window label · {app}"),
+        AttributionQuality::FocusedWindowGuess => format!("Focused-window guess · {app}"),
         AttributionQuality::CacheStaleFocusedWindowGuess => {
-            format!("Focused-window label (stale) · {app}")
+            format!("Focused-window guess (stale) · {app}")
         }
         AttributionQuality::BrokerInjectedDebug => "Debug-injected source".to_owned(),
     }

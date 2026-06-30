@@ -2,7 +2,7 @@ use clap::Parser;
 use d2b_clip_picker::placement::PickerPlacement;
 use d2b_clip_picker::protocol::{IpcPeer, OpenRequest};
 use d2b_clip_picker::ui;
-use log::{debug, error, warn};
+use log::{debug, error, info, warn};
 use std::env;
 use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
@@ -57,7 +57,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let mut peer = IpcPeer::new(stream)?;
     peer.send_client_hello()?;
     let request = match peer.read_clipd_frame()? {
-        d2b_clip_picker::protocol::ClipdFrame::OpenRequest(request) => request,
+        d2b_clip_picker::protocol::ClipdFrame::OpenRequest(request) => *request,
         d2b_clip_picker::protocol::ClipdFrame::Close { .. } => return Ok(()),
         d2b_clip_picker::protocol::ClipdFrame::Error { code, .. } => {
             return Err(format!("clipd rejected picker request: {code}").into());
@@ -86,7 +86,7 @@ fn choose_placement(request: &OpenRequest) -> PickerPlacement {
                     captured.geometry.overlay_height = height;
                 }
                 apply_hint_output_if_missing(&mut captured, hints.output.clone());
-                warn!(
+                info!(
                     "picker pointer capture placement x={} y={} output_width={} output_height={} output={:?}",
                     captured.geometry.x,
                     captured.geometry.y,
@@ -107,7 +107,7 @@ fn choose_placement(request: &OpenRequest) -> PickerPlacement {
         500,
     )) {
         Ok(placement) => {
-            warn!(
+            info!(
                 "picker pointer capture placement x={} y={} output_width={} output_height={} output={:?}",
                 placement.geometry.x,
                 placement.geometry.y,

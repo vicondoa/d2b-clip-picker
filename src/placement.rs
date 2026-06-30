@@ -26,7 +26,7 @@ pub struct Placement {
     pub output_height: i32,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct PickerPlacement {
     pub geometry: Placement,
     pub output: Option<String>,
@@ -41,15 +41,6 @@ impl Default for Placement {
             overlay_height: 520,
             output_width: 0,
             output_height: 0,
-        }
-    }
-}
-
-impl Default for PickerPlacement {
-    fn default() -> Self {
-        Self {
-            geometry: Placement::default(),
-            output: None,
         }
     }
 }
@@ -167,24 +158,43 @@ fn dispatch_once_until(
             drop(guard);
             Err("timed out waiting for pointer enter".into())
         }
-        Ok(_)
-            if fds[0]
-                .revents()
-                .intersects(rustix::event::PollFlags::ERR | rustix::event::PollFlags::HUP) =>
-        {
-            drop(guard);
-            Err("Wayland connection closed during pointer capture".into())
-        }
-        Ok(_) => {
-            guard.read()?;
-            queue.dispatch_pending(state)?;
-            Ok(())
-        }
+        Ok(_) => match pointer_poll_action(fds[0].revents()) {
+            PointerPollAction::Read => {
+                guard.read()?;
+                queue.dispatch_pending(state)?;
+                Ok(())
+            }
+            PointerPollAction::Closed => {
+                drop(guard);
+                Err("Wayland connection closed during pointer capture".into())
+            }
+            PointerPollAction::Ignore => {
+                drop(guard);
+                Ok(())
+            }
+        },
         Err(rustix::io::Errno::INTR) => Ok(()),
         Err(error) => {
             drop(guard);
             Err(format!("poll pointer capture fd: {error}").into())
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PointerPollAction {
+    Read,
+    Closed,
+    Ignore,
+}
+
+fn pointer_poll_action(revents: rustix::event::PollFlags) -> PointerPollAction {
+    if revents.contains(rustix::event::PollFlags::IN) {
+        PointerPollAction::Read
+    } else if revents.intersects(rustix::event::PollFlags::ERR | rustix::event::PollFlags::HUP) {
+        PointerPollAction::Closed
+    } else {
+        PointerPollAction::Ignore
     }
 }
 
@@ -502,5 +512,18 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
         } else {
             debug!("registry event ignored by pointer capture");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn pointer_poll_action_prioritizes_read_before_hup() {
+        let action =
+            pointer_poll_action(rustix::event::PollFlags::IN | rustix::event::PollFlags::HUP);
+
+        assert_eq!(action, PointerPollAction::Read);
     }
 }
