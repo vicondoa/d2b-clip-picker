@@ -78,7 +78,7 @@ fn create_window(
     app: &gtk4::Application,
     request: OpenRequest,
     tx: PickerTx,
-    placement: PickerPlacement,
+    mut placement: PickerPlacement,
     test_select_first: bool,
 ) -> adw::ApplicationWindow {
     configure_color_scheme();
@@ -90,6 +90,26 @@ fn create_window(
         .default_height(520)
         .build();
     window.add_css_class("d2b-clip-picker");
+    window.init_layer_shell();
+    window.set_layer(Layer::Top);
+    window.set_namespace(Some("d2b-clip-picker"));
+    let monitor = placement
+        .output
+        .as_deref()
+        .and_then(find_monitor)
+        .or_else(default_monitor);
+    if let Some(monitor) = monitor.as_ref() {
+        if placement.geometry.output_width <= 0 || placement.geometry.output_height <= 0 {
+            let geometry = monitor.geometry();
+            placement.geometry.output_width = geometry.width();
+            placement.geometry.output_height = geometry.height();
+            placement.geometry.x =
+                ((geometry.width() - placement.geometry.overlay_width).max(16) / 2) as f64;
+            placement.geometry.y =
+                ((geometry.height() - placement.geometry.overlay_height).max(16) / 2) as f64;
+        }
+        window.set_monitor(Some(monitor));
+    }
     warn!(
         "picker window placement x={} y={} overlay_width={} overlay_height={} output={:?}",
         placement.geometry.x,
@@ -98,13 +118,6 @@ fn create_window(
         placement.geometry.overlay_height,
         placement.output
     );
-
-    window.init_layer_shell();
-    window.set_layer(Layer::Top);
-    window.set_namespace(Some("d2b-clip-picker"));
-    if let Some(monitor) = placement.output.as_deref().and_then(find_monitor) {
-        window.set_monitor(Some(&monitor));
-    }
     window.set_exclusive_zone(-1);
     window.set_keyboard_mode(KeyboardMode::Exclusive);
     let placement = placement.geometry;
@@ -414,6 +427,12 @@ fn find_monitor(output: &str) -> Option<gdk::Monitor> {
         }
     }
     None
+}
+
+fn default_monitor() -> Option<gdk::Monitor> {
+    let display = gdk::Display::default()?;
+    let monitors = display.monitors();
+    monitors.item(0)?.downcast::<gdk::Monitor>().ok()
 }
 
 fn rebuild_rows(

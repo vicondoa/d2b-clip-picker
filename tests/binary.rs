@@ -55,8 +55,11 @@ fn picker_exits_nonzero_on_malformed_clipd_frame() {
     // `deny_unknown_fields` + `serde(tag = "type")`, so this will fail
     // deserialization and the picker must exit non-zero.
     let mut writer = parent.try_clone().expect("clone socket for write");
-    writeln!(writer, r#"{{"type":"totally_bogus_type_that_does_not_exist_in_clipd_frame"}}"#)
-        .expect("write malformed frame");
+    writeln!(
+        writer,
+        r#"{{"type":"totally_bogus_type_that_does_not_exist_in_clipd_frame"}}"#
+    )
+    .expect("write malformed frame");
     drop(writer);
     drop(parent);
 
