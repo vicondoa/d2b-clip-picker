@@ -221,10 +221,18 @@ fn create_window(
     if test_select_first {
         let displayed_for_test = displayed.clone();
         let activation_for_test = activation.clone();
-        glib::idle_add_local_once(move || {
-            if let Some(candidate) = displayed_for_test.borrow().first() {
-                activate_candidate(candidate, &activation_for_test);
-            }
+        window.connect_map(move |_| {
+            let displayed_for_test = displayed_for_test.clone();
+            let activation_for_test = activation_for_test.clone();
+            glib::idle_add_local_once(move || {
+                if let Some(candidate) = displayed_for_test.borrow().first() {
+                    warn!(
+                        "test-select-first mapped; selecting entry {}",
+                        candidate.entry_id
+                    );
+                    activate_candidate(candidate, &activation_for_test);
+                }
+            });
         });
     }
     let displayed_for_activation = displayed.clone();
