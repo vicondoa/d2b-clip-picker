@@ -17,6 +17,9 @@ struct Args {
     /// Inherited socketpair file descriptor from d2b-clipd.
     #[arg(long = "ipc-fd")]
     ipc_fd: i32,
+    /// Test harness only: activate the first rendered row after the UI maps.
+    #[arg(long = "test-select-first", hide = true)]
+    test_select_first: bool,
 }
 
 fn main() {
@@ -62,7 +65,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     let placement = choose_placement(&request);
     debug!("starting picker UI");
-    ui::run_picker(request, peer, placement)?;
+    ui::run_picker(request, peer, placement, args.test_select_first)?;
     Ok(())
 }
 

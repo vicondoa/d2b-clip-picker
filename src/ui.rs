@@ -19,6 +19,7 @@ pub fn run_picker(
     request: OpenRequest,
     peer: IpcPeer,
     placement: PickerPlacement,
+    test_select_first: bool,
 ) -> Result<(), Box<dyn std::error::Error>> {
     adw::init()?;
     let tx = peer.tx_for_request(&request);
@@ -54,6 +55,7 @@ pub fn run_picker(
             request_for_activate.clone(),
             tx.clone(),
             placement_for_activate.clone(),
+            test_select_first,
         );
         window.present();
     });
@@ -77,6 +79,7 @@ fn create_window(
     request: OpenRequest,
     tx: PickerTx,
     placement: PickerPlacement,
+    test_select_first: bool,
 ) -> adw::ApplicationWindow {
     configure_color_scheme();
     let window = adw::ApplicationWindow::builder()
@@ -215,6 +218,15 @@ fn create_window(
         confirm_entry: confirm_entry.clone(),
         banner: banner.clone(),
     };
+    if test_select_first {
+        let displayed_for_test = displayed.clone();
+        let activation_for_test = activation.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(candidate) = displayed_for_test.borrow().first() {
+                activate_candidate(candidate, &activation_for_test);
+            }
+        });
+    }
     let displayed_for_activation = displayed.clone();
     let activation_for_click = activation.clone();
     list_box.connect_row_activated(move |_, row| {
