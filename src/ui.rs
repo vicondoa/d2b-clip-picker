@@ -227,6 +227,20 @@ fn create_window(
             activate_candidate(candidate, &activation_for_click);
         }
     });
+    let click_controller = gtk4::GestureClick::new();
+    let list_for_click = list_box.clone();
+    let displayed_for_click_select = displayed.clone();
+    let activation_for_single_click = activation.clone();
+    click_controller.connect_released(move |_, _, _, _| {
+        if let Some(row) = list_for_click.selected_row()
+            && let Some(candidate) = displayed_for_click_select
+                .borrow()
+                .get(row.index() as usize)
+        {
+            activate_candidate(candidate, &activation_for_single_click);
+        }
+    });
+    list_box.add_controller(click_controller);
 
     let key_controller = gtk4::EventControllerKey::new();
     let list_for_keys = list_box.clone();
