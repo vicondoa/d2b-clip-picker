@@ -113,6 +113,7 @@ fn create_window(
     let displayed = Rc::new(RefCell::new(Vec::<Candidate>::new()));
 
     let main_box = gtk4::Box::new(Orientation::Vertical, 0);
+    main_box.add_css_class("d2b-clip-picker-root");
     let header = adw::HeaderBar::new();
     header.set_show_end_title_buttons(false);
     header.set_show_start_title_buttons(false);
@@ -596,7 +597,13 @@ fn apply_css(window: &adw::ApplicationWindow) {
     provider.load_from_data(
         "
         window.d2b-clip-picker {
-            background: #1e1e2e;
+            background-color: #1e1e2e;
+            color: #f8f8f2;
+            border: 2px solid #89b4fa;
+            border-radius: 12px;
+        }
+        .d2b-clip-picker-root {
+            background-color: #1e1e2e;
             color: #f8f8f2;
             border: 2px solid #89b4fa;
             border-radius: 12px;
