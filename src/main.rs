@@ -1,5 +1,5 @@
 use clap::Parser;
-use d2b_clip_picker::placement::{Placement, PointerCapture};
+use d2b_clip_picker::placement::Placement;
 use d2b_clip_picker::protocol::{IpcPeer, OpenRequest};
 use d2b_clip_picker::ui;
 use log::{debug, error};
@@ -72,5 +72,5 @@ fn choose_placement(request: &OpenRequest) -> Placement {
         return placement;
     }
 
-    PointerCapture::capture().unwrap_or_else(|_| Placement::default())
+    Placement::default()
 }
