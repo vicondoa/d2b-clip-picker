@@ -76,7 +76,10 @@ fn create_window(
         .application(app)
         .title("d2b clipboard picker")
         .decorated(false)
+        .default_width(420)
+        .default_height(520)
         .build();
+    window.add_css_class("d2b-clip-picker");
 
     window.init_layer_shell();
     window.set_layer(Layer::Overlay);
@@ -592,7 +595,12 @@ fn apply_css(window: &adw::ApplicationWindow) {
     let provider = gtk4::CssProvider::new();
     provider.load_from_data(
         "
-        window { border-radius: 12px; }
+        window.d2b-clip-picker {
+            background: #1e1e2e;
+            color: #f8f8f2;
+            border: 2px solid #89b4fa;
+            border-radius: 12px;
+        }
         headerbar { background: transparent; box-shadow: none; }
         .clipboard-list { background: transparent; }
         .clipboard-item {
