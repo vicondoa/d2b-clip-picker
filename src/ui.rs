@@ -215,6 +215,15 @@ fn create_window(
         confirm_entry: confirm_entry.clone(),
         banner: banner.clone(),
     };
+    if std::env::var_os("D2B_CLIP_PICKER_TEST_SELECT_FIRST").is_some() {
+        let displayed_for_autoselect = displayed.clone();
+        let activation_for_autoselect = activation.clone();
+        glib::idle_add_local_once(move || {
+            if let Some(candidate) = displayed_for_autoselect.borrow().first() {
+                activate_candidate(candidate, &activation_for_autoselect);
+            }
+        });
+    }
     let displayed_for_activation = displayed.clone();
     let activation_for_click = activation.clone();
     list_box.connect_row_activated(move |_, row| {
