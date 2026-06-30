@@ -4,6 +4,7 @@ use std::fs::File;
 use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd};
 use std::os::unix::io::BorrowedFd;
+use std::time::{Duration, Instant};
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{
     wl_buffer, wl_compositor, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm, wl_shm_pool,
@@ -96,6 +97,10 @@ pub struct PointerCapture;
 
 impl PointerCapture {
     pub fn capture() -> Result<Placement, Box<dyn std::error::Error>> {
+        Self::capture_timeout(Duration::from_secs(30))
+    }
+
+    pub fn capture_timeout(timeout: Duration) -> Result<Placement, Box<dyn std::error::Error>> {
         let conn = Connection::connect_to_env()?;
         let (globals, mut queue): (GlobalList, EventQueue<State>) = registry_queue_init(&conn)?;
         let mut state = State::new();
@@ -103,8 +108,9 @@ impl PointerCapture {
         init_protocols(&globals, &queue, &mut state)?;
         setup_capture_layer(&mut state, &queue)?;
 
+        let deadline = Instant::now() + timeout;
         while !state.coords_received {
-            queue.blocking_dispatch(&mut state)?;
+            dispatch_once_until(&mut queue, &mut state, deadline)?;
         }
         cleanup_capture_layer(&mut state);
         Ok(Placement {
@@ -115,6 +121,58 @@ impl PointerCapture {
             output_width: state.monitor_width,
             output_height: state.monitor_height,
         })
+    }
+}
+
+fn dispatch_once_until(
+    queue: &mut EventQueue<State>,
+    state: &mut State,
+    deadline: Instant,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if queue.dispatch_pending(state)? > 0 {
+        return Ok(());
+    }
+    queue.flush()?;
+    let Some(guard) = queue.prepare_read() else {
+        return Ok(());
+    };
+    let now = Instant::now();
+    if now >= deadline {
+        drop(guard);
+        return Err("timed out waiting for pointer enter".into());
+    }
+    let timeout_duration = deadline.saturating_duration_since(now);
+    let timeout = rustix::event::Timespec::try_from(timeout_duration)
+        .map_err(|_| "pointer capture timeout is too large")?;
+    let mut fds = [rustix::event::PollFd::from_borrowed_fd(
+        guard.connection_fd(),
+        rustix::event::PollFlags::IN
+            | rustix::event::PollFlags::ERR
+            | rustix::event::PollFlags::HUP,
+    )];
+    match rustix::event::poll(&mut fds, Some(&timeout)) {
+        Ok(0) => {
+            drop(guard);
+            Err("timed out waiting for pointer enter".into())
+        }
+        Ok(_)
+            if fds[0]
+                .revents()
+                .intersects(rustix::event::PollFlags::ERR | rustix::event::PollFlags::HUP) =>
+        {
+            drop(guard);
+            Err("Wayland connection closed during pointer capture".into())
+        }
+        Ok(_) => {
+            guard.read()?;
+            queue.dispatch_pending(state)?;
+            Ok(())
+        }
+        Err(rustix::io::Errno::INTR) => Ok(()),
+        Err(error) => {
+            drop(guard);
+            Err(format!("poll pointer capture fd: {error}").into())
+        }
     }
 }
 

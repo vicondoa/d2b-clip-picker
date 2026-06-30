@@ -1,7 +1,7 @@
 use crate::placement::PickerPlacement;
 use crate::protocol::{
-    AttributionQuality, Candidate, ClipdFrame, IpcPeer, OpenRequest, PickerTx, RealmKind,
-    MAX_OPEN_REQUEST_BYTES, display_content_kind, read_bounded_line, sanitize_preview,
+    AttributionQuality, Candidate, ClipdFrame, IpcPeer, MAX_OPEN_REQUEST_BYTES, OpenRequest,
+    PickerTx, RealmKind, display_content_kind, read_bounded_line, sanitize_preview,
 };
 use base64::Engine;
 use gtk4::gdk::prelude::MonitorExt;
@@ -90,6 +90,14 @@ fn create_window(
         .default_height(520)
         .build();
     window.add_css_class("d2b-clip-picker");
+    warn!(
+        "picker window placement x={} y={} overlay_width={} overlay_height={} output={:?}",
+        placement.geometry.x,
+        placement.geometry.y,
+        placement.geometry.overlay_width,
+        placement.geometry.overlay_height,
+        placement.output
+    );
 
     window.init_layer_shell();
     window.set_layer(Layer::Top);
@@ -397,7 +405,9 @@ fn find_monitor(output: &str) -> Option<gdk::Monitor> {
         };
         let connector = monitor.connector();
         let model = monitor.model();
-        let matches = connector.as_ref().is_some_and(|connector| connector == output)
+        let matches = connector
+            .as_ref()
+            .is_some_and(|connector| connector == output)
             || model.as_ref().is_some_and(|model| model.contains(output));
         if matches {
             return Some(monitor);

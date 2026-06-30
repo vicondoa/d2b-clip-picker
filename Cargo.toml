@@ -23,6 +23,7 @@ gtk4-layer-shell = "0.6.3"
 libadwaita = "0.8"
 libc = "0.2"
 log = "0.4"
+rustix = { version = "1.0", features = ["event"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 wayland-client = "0.31.13"
