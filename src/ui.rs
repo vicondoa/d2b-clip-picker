@@ -313,7 +313,7 @@ fn create_window(
 }
 
 fn use_layer_shell() -> bool {
-    std::env::var_os("D2B_CLIP_PICKER_LAYER_SHELL").is_some()
+    std::env::var_os("D2B_CLIP_PICKER_NO_LAYER_SHELL").is_none()
 }
 
 #[derive(Clone)]
