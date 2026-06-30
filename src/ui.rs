@@ -88,21 +88,26 @@ fn create_window(
         .build();
     window.add_css_class("d2b-clip-picker");
 
-    window.init_layer_shell();
-    window.set_layer(Layer::Overlay);
-    window.set_namespace(Some("d2b-clip-picker"));
-    if let Some(monitor) = placement.output.as_deref().and_then(find_monitor) {
-        window.set_monitor(Some(&monitor));
+    let use_layer_shell = use_layer_shell();
+    if use_layer_shell {
+        window.init_layer_shell();
+        window.set_layer(Layer::Overlay);
+        window.set_namespace(Some("d2b-clip-picker"));
+        if let Some(monitor) = placement.output.as_deref().and_then(find_monitor) {
+            window.set_monitor(Some(&monitor));
+        }
+        window.set_exclusive_zone(-1);
+        window.set_keyboard_mode(KeyboardMode::Exclusive);
     }
     let placement = placement.geometry;
-    window.set_anchor(Edge::Top, true);
-    window.set_anchor(Edge::Left, true);
-    window.set_margin(Edge::Top, placement.y as i32);
-    window.set_margin(Edge::Left, placement.x as i32);
-    window.set_exclusive_zone(-1);
-    window.set_keyboard_mode(KeyboardMode::Exclusive);
+    if use_layer_shell {
+        window.set_anchor(Edge::Top, true);
+        window.set_anchor(Edge::Left, true);
+        window.set_margin(Edge::Top, placement.y as i32);
+        window.set_margin(Edge::Left, placement.x as i32);
+    }
 
-    if placement.output_width > 0 && placement.output_height > 0 {
+    if use_layer_shell && placement.output_width > 0 && placement.output_height > 0 {
         window.connect_map(move |mapped| {
             let mapped = mapped.clone();
             glib::idle_add_local_once(move || {
@@ -291,6 +296,10 @@ fn create_window(
     window.add_controller(key_controller);
 
     window
+}
+
+fn use_layer_shell() -> bool {
+    std::env::var_os("D2B_CLIP_PICKER_LAYER_SHELL").is_some()
 }
 
 #[derive(Clone)]
