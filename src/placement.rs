@@ -1,5 +1,6 @@
 use crate::protocol::PlacementHints;
 use log::debug;
+use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write;
 use std::os::fd::{AsRawFd, FromRawFd};
@@ -7,10 +8,10 @@ use std::os::unix::io::BorrowedFd;
 use std::time::{Duration, Instant};
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{
-    wl_buffer, wl_compositor, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm, wl_shm_pool,
-    wl_surface,
+    wl_buffer, wl_compositor, wl_output, wl_pointer, wl_region, wl_registry, wl_seat, wl_shm,
+    wl_shm_pool, wl_surface,
 };
-use wayland_client::{Connection, Dispatch, EventQueue, QueueHandle, WEnum, delegate_noop};
+use wayland_client::{Connection, Dispatch, EventQueue, Proxy, QueueHandle, WEnum, delegate_noop};
 use wayland_protocols::wp::single_pixel_buffer::v1::client::wp_single_pixel_buffer_manager_v1;
 use wayland_protocols::wp::viewporter::client::{wp_viewport, wp_viewporter};
 use wayland_protocols_wlr::layer_shell::v1::client::{zwlr_layer_shell_v1, zwlr_layer_surface_v1};
@@ -101,6 +102,12 @@ impl PointerCapture {
     }
 
     pub fn capture_timeout(timeout: Duration) -> Result<Placement, Box<dyn std::error::Error>> {
+        Self::capture_picker_timeout(timeout).map(|placement| placement.geometry)
+    }
+
+    pub fn capture_picker_timeout(
+        timeout: Duration,
+    ) -> Result<PickerPlacement, Box<dyn std::error::Error>> {
         let conn = Connection::connect_to_env()?;
         let (globals, mut queue): (GlobalList, EventQueue<State>) = registry_queue_init(&conn)?;
         let mut state = State::new();
@@ -113,13 +120,18 @@ impl PointerCapture {
             dispatch_once_until(&mut queue, &mut state, deadline)?;
         }
         cleanup_capture_layer(&mut state);
-        Ok(Placement {
-            x: state.received_x,
-            y: state.received_y,
-            overlay_width: state.overlay_width,
-            overlay_height: state.overlay_height,
-            output_width: state.monitor_width,
-            output_height: state.monitor_height,
+        Ok(PickerPlacement {
+            geometry: Placement {
+                x: state.received_x,
+                y: state.received_y,
+                overlay_width: state.overlay_width,
+                overlay_height: state.overlay_height,
+                output_width: state.monitor_width,
+                output_height: state.monitor_height,
+            },
+            output: state
+                .entered_output_id
+                .and_then(|id| state.output_names.get(&id).cloned()),
         })
     }
 }
@@ -181,6 +193,9 @@ pub struct State {
     layer_shell: Option<zwlr_layer_shell_v1::ZwlrLayerShellV1>,
     pointer: Option<wl_pointer::WlPointer>,
     seat: Option<wl_seat::WlSeat>,
+    outputs: BTreeMap<u32, wl_output::WlOutput>,
+    output_names: BTreeMap<u32, String>,
+    entered_output_id: Option<u32>,
     single_pixel_buffer_manager:
         Option<wp_single_pixel_buffer_manager_v1::WpSinglePixelBufferManagerV1>,
     viewporter: Option<wp_viewporter::WpViewporter>,
@@ -207,6 +222,9 @@ impl State {
             layer_shell: None,
             pointer: None,
             seat: None,
+            outputs: BTreeMap::new(),
+            output_names: BTreeMap::new(),
+            entered_output_id: None,
             single_pixel_buffer_manager: None,
             viewporter: None,
             shm: None,
@@ -382,6 +400,36 @@ impl Dispatch<wl_pointer::WlPointer, ()> for State {
     }
 }
 
+impl Dispatch<wl_output::WlOutput, ()> for State {
+    fn event(
+        state: &mut Self,
+        output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<State>,
+    ) {
+        if let wl_output::Event::Name { name } = event {
+            state.output_names.insert(output.id().protocol_id(), name);
+        }
+    }
+}
+
+impl Dispatch<wl_surface::WlSurface, ()> for State {
+    fn event(
+        state: &mut Self,
+        _surface: &wl_surface::WlSurface,
+        event: wl_surface::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qhandle: &QueueHandle<State>,
+    ) {
+        if let wl_surface::Event::Enter { output } = event {
+            state.entered_output_id = Some(output.id().protocol_id());
+        }
+    }
+}
+
 impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for State {
     fn event(
         state: &mut State,
@@ -423,7 +471,6 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for State {
 
 delegate_noop!(State: wl_compositor::WlCompositor);
 delegate_noop!(State: wl_region::WlRegion);
-delegate_noop!(State: wl_surface::WlSurface);
 delegate_noop!(State: zwlr_layer_shell_v1::ZwlrLayerShellV1);
 delegate_noop!(State: wp_viewporter::WpViewporter);
 delegate_noop!(State: wp_viewport::WpViewport);
@@ -434,13 +481,26 @@ delegate_noop!(State: ignore wl_shm::WlShm);
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
     fn event(
-        _state: &mut State,
-        _registry: &wl_registry::WlRegistry,
-        _event: wl_registry::Event,
+        state: &mut State,
+        registry: &wl_registry::WlRegistry,
+        event: wl_registry::Event,
         _data: &GlobalListContents,
         _conn: &Connection,
-        _qh: &QueueHandle<State>,
+        qh: &QueueHandle<State>,
     ) {
-        debug!("registry event ignored by pointer capture");
+        if let wl_registry::Event::Global {
+            name,
+            interface,
+            version,
+        } = event
+        {
+            if interface == "wl_output" {
+                let output =
+                    registry.bind::<wl_output::WlOutput, _, _>(name, version.min(4), qh, ());
+                state.outputs.insert(output.id().protocol_id(), output);
+            }
+        } else {
+            debug!("registry event ignored by pointer capture");
+        }
     }
 }

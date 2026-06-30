@@ -75,24 +75,25 @@ fn choose_placement(request: &OpenRequest) -> PickerPlacement {
         if hints.pointer_x.is_some() && hints.pointer_y.is_some() {
             return PickerPlacement::from_hints(hints);
         }
-        match d2b_clip_picker::placement::PointerCapture::capture_timeout(Duration::from_millis(
-            500,
-        )) {
-            Ok(mut placement) => {
+        match d2b_clip_picker::placement::PointerCapture::capture_picker_timeout(
+            Duration::from_millis(500),
+        ) {
+            Ok(mut captured) => {
                 if let Some(width) = hints.overlay_width {
-                    placement.overlay_width = width;
+                    captured.geometry.overlay_width = width;
                 }
                 if let Some(height) = hints.overlay_height {
-                    placement.overlay_height = height;
+                    captured.geometry.overlay_height = height;
                 }
                 warn!(
-                    "picker pointer capture placement x={} y={} output_width={} output_height={}",
-                    placement.x, placement.y, placement.output_width, placement.output_height
+                    "picker pointer capture placement x={} y={} output_width={} output_height={} output={:?}",
+                    captured.geometry.x,
+                    captured.geometry.y,
+                    captured.geometry.output_width,
+                    captured.geometry.output_height,
+                    captured.output
                 );
-                return PickerPlacement {
-                    geometry: placement,
-                    output: hints.output.clone(),
-                };
+                return captured;
             }
             Err(error) => {
                 warn!("picker pointer capture failed, using placement hints: {error}");
@@ -101,16 +102,19 @@ fn choose_placement(request: &OpenRequest) -> PickerPlacement {
         return PickerPlacement::from_hints(hints);
     }
 
-    match d2b_clip_picker::placement::PointerCapture::capture_timeout(Duration::from_millis(500)) {
+    match d2b_clip_picker::placement::PointerCapture::capture_picker_timeout(Duration::from_millis(
+        500,
+    )) {
         Ok(placement) => {
             warn!(
-                "picker pointer capture placement x={} y={} output_width={} output_height={}",
-                placement.x, placement.y, placement.output_width, placement.output_height
+                "picker pointer capture placement x={} y={} output_width={} output_height={} output={:?}",
+                placement.geometry.x,
+                placement.geometry.y,
+                placement.geometry.output_width,
+                placement.geometry.output_height,
+                placement.output
             );
-            PickerPlacement {
-                geometry: placement,
-                output: None,
-            }
+            placement
         }
         Err(error) => {
             warn!("picker pointer capture failed, using default placement: {error}");
