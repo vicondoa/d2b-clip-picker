@@ -24,6 +24,12 @@ pub struct Placement {
     pub output_height: i32,
 }
 
+#[derive(Debug, Clone)]
+pub struct PickerPlacement {
+    pub geometry: Placement,
+    pub output: Option<String>,
+}
+
 impl Default for Placement {
     fn default() -> Self {
         Self {
@@ -37,18 +43,52 @@ impl Default for Placement {
     }
 }
 
+impl Default for PickerPlacement {
+    fn default() -> Self {
+        Self {
+            geometry: Placement::default(),
+            output: None,
+        }
+    }
+}
+
 impl Placement {
-    pub fn from_hints(hints: &PlacementHints) -> Option<Self> {
-        let x = hints.pointer_x?;
-        let y = hints.pointer_y?;
-        Some(Self {
+    pub fn from_hints(hints: &PlacementHints) -> Self {
+        let overlay_width = hints.overlay_width.unwrap_or(420);
+        let overlay_height = hints.overlay_height.unwrap_or(520);
+        let output_width = hints.output_width.unwrap_or(0);
+        let output_height = hints.output_height.unwrap_or(0);
+        let x = hints.pointer_x.unwrap_or_else(|| {
+            if output_width > overlay_width {
+                ((output_width - overlay_width) / 2) as f64
+            } else {
+                24.0
+            }
+        });
+        let y = hints.pointer_y.unwrap_or_else(|| {
+            if output_height > overlay_height {
+                ((output_height - overlay_height) / 2) as f64
+            } else {
+                24.0
+            }
+        });
+        Self {
             x,
             y,
-            overlay_width: hints.overlay_width.unwrap_or(420),
-            overlay_height: hints.overlay_height.unwrap_or(520),
-            output_width: hints.output_width.unwrap_or(0),
-            output_height: hints.output_height.unwrap_or(0),
-        })
+            overlay_width,
+            overlay_height,
+            output_width,
+            output_height,
+        }
+    }
+}
+
+impl PickerPlacement {
+    pub fn from_hints(hints: &PlacementHints) -> Self {
+        Self {
+            geometry: Placement::from_hints(hints),
+            output: hints.output.clone(),
+        }
     }
 }
 

@@ -1,9 +1,10 @@
-use crate::placement::Placement;
+use crate::placement::PickerPlacement;
 use crate::protocol::{
     AttributionQuality, Candidate, ClipdFrame, IpcPeer, OpenRequest, PickerTx, RealmKind,
     MAX_OPEN_REQUEST_BYTES, display_content_kind, read_bounded_line, sanitize_preview,
 };
 use base64::Engine;
+use gtk4::gdk::prelude::MonitorExt;
 use gtk4::prelude::*;
 use gtk4::{Align, Orientation, gdk};
 use gtk4_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
@@ -17,7 +18,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 pub fn run_picker(
     request: OpenRequest,
     peer: IpcPeer,
-    placement: Placement,
+    placement: PickerPlacement,
 ) -> Result<(), Box<dyn std::error::Error>> {
     adw::init()?;
     let tx = peer.tx_for_request(&request);
@@ -46,8 +47,14 @@ pub fn run_picker(
         .upcast();
 
     let request_for_activate = request.clone();
+    let placement_for_activate = placement.clone();
     app.connect_activate(move |app| {
-        let window = create_window(app, request_for_activate.clone(), tx.clone(), placement);
+        let window = create_window(
+            app,
+            request_for_activate.clone(),
+            tx.clone(),
+            placement_for_activate.clone(),
+        );
         window.present();
     });
 
@@ -69,7 +76,7 @@ fn create_window(
     app: &gtk4::Application,
     request: OpenRequest,
     tx: PickerTx,
-    placement: Placement,
+    placement: PickerPlacement,
 ) -> adw::ApplicationWindow {
     configure_color_scheme();
     let window = adw::ApplicationWindow::builder()
@@ -84,6 +91,10 @@ fn create_window(
     window.init_layer_shell();
     window.set_layer(Layer::Overlay);
     window.set_namespace(Some("d2b-clip-picker"));
+    if let Some(monitor) = placement.output.as_deref().and_then(find_monitor) {
+        window.set_monitor(Some(&monitor));
+    }
+    let placement = placement.geometry;
     window.set_anchor(Edge::Top, true);
     window.set_anchor(Edge::Left, true);
     window.set_margin(Edge::Top, placement.y as i32);
@@ -338,6 +349,27 @@ fn update_search(
     if let Some(first) = list_box.row_at_index(0) {
         list_box.select_row(Some(&first));
     }
+}
+
+fn find_monitor(output: &str) -> Option<gdk::Monitor> {
+    let display = gdk::Display::default()?;
+    let monitors = display.monitors();
+    for index in 0..monitors.n_items() {
+        let Some(item) = monitors.item(index) else {
+            continue;
+        };
+        let Ok(monitor) = item.downcast::<gdk::Monitor>() else {
+            continue;
+        };
+        let connector = monitor.connector();
+        let model = monitor.model();
+        let matches = connector.as_ref().is_some_and(|connector| connector == output)
+            || model.as_ref().is_some_and(|model| model.contains(output));
+        if matches {
+            return Some(monitor);
+        }
+    }
+    None
 }
 
 fn rebuild_rows(

@@ -1,5 +1,5 @@
 use clap::Parser;
-use d2b_clip_picker::placement::Placement;
+use d2b_clip_picker::placement::PickerPlacement;
 use d2b_clip_picker::protocol::{IpcPeer, OpenRequest};
 use d2b_clip_picker::ui;
 use log::{debug, error};
@@ -66,16 +66,12 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn choose_placement(request: &OpenRequest) -> Placement {
-    if let Some(placement) = request
-        .placement_hints
-        .as_ref()
-        .and_then(Placement::from_hints)
-    {
-        return placement;
+fn choose_placement(request: &OpenRequest) -> PickerPlacement {
+    if let Some(hints) = request.placement_hints.as_ref() {
+        return PickerPlacement::from_hints(hints);
     }
 
-    Placement::default()
+    PickerPlacement::default()
 }
 
 fn force_headless_safe_gtk_defaults() {
