@@ -85,6 +85,7 @@ fn choose_placement(request: &OpenRequest) -> PickerPlacement {
                 if let Some(height) = hints.overlay_height {
                     captured.geometry.overlay_height = height;
                 }
+                apply_hint_output_if_missing(&mut captured, hints.output.clone());
                 warn!(
                     "picker pointer capture placement x={} y={} output_width={} output_height={} output={:?}",
                     captured.geometry.x,
@@ -123,6 +124,12 @@ fn choose_placement(request: &OpenRequest) -> PickerPlacement {
     }
 }
 
+fn apply_hint_output_if_missing(placement: &mut PickerPlacement, hint_output: Option<String>) {
+    if placement.output.is_none() {
+        placement.output = hint_output;
+    }
+}
+
 fn force_headless_safe_gtk_defaults() {
     if env::var_os("GDK_BACKEND").is_none() {
         unsafe {
@@ -133,5 +140,44 @@ fn force_headless_safe_gtk_defaults() {
         unsafe {
             env::set_var("GSK_RENDERER", "cairo");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use d2b_clip_picker::placement::Placement;
+
+    #[test]
+    fn pointer_capture_uses_destination_output_hint_when_capture_has_no_output() {
+        let mut placement = PickerPlacement {
+            geometry: Placement {
+                x: 10.0,
+                y: 20.0,
+                overlay_width: 420,
+                overlay_height: 520,
+                output_width: 2560,
+                output_height: 1440,
+            },
+            output: None,
+        };
+
+        apply_hint_output_if_missing(&mut placement, Some("DP-3".to_owned()));
+
+        assert_eq!(placement.output.as_deref(), Some("DP-3"));
+        assert_eq!(placement.geometry.x, 10.0);
+        assert_eq!(placement.geometry.y, 20.0);
+    }
+
+    #[test]
+    fn pointer_capture_keeps_exact_output_when_available() {
+        let mut placement = PickerPlacement {
+            geometry: Placement::default(),
+            output: Some("HDMI-A-1".to_owned()),
+        };
+
+        apply_hint_output_if_missing(&mut placement, Some("DP-3".to_owned()));
+
+        assert_eq!(placement.output.as_deref(), Some("HDMI-A-1"));
     }
 }
