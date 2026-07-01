@@ -54,6 +54,7 @@
             --owner=0 \
             --group=0 \
             --numeric-owner \
+            --transform 's,^\./,d2b-clip-picker-${version}/,' \
             -czf "$out/d2b-clip-picker-${version}-source.tar.gz" \
             -C ${cleanSrc} .
         '';

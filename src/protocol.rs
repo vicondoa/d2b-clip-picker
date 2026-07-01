@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use std::io::{BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
 
@@ -231,25 +231,21 @@ impl IpcPeer {
     }
 }
 
-pub fn read_bounded_line<R: Read>(
+pub fn read_bounded_line<R: BufRead>(
     reader: &mut R,
     max_bytes: usize,
 ) -> Result<String, Box<dyn std::error::Error>> {
     let mut buf = Vec::new();
-    let mut byte = [0_u8; 1];
-    loop {
-        let read = reader.read(&mut byte)?;
-        if read == 0 {
-            return Err("d2b-clipd closed picker socket".into());
-        }
-        if byte[0] == b'\n' {
-            break;
-        }
-        if buf.len() >= max_bytes {
-            return Err("clipd frame exceeded size cap".into());
-        }
-        buf.push(byte[0]);
+    let read = reader
+        .take(max_bytes.saturating_add(1) as u64)
+        .read_until(b'\n', &mut buf)?;
+    if read == 0 {
+        return Err("d2b-clipd closed picker socket".into());
     }
+    if !buf.ends_with(b"\n") {
+        return Err("clipd frame exceeded size cap".into());
+    }
+    buf.pop();
     Ok(String::from_utf8(buf)?)
 }
 

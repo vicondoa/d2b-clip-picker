@@ -3,8 +3,7 @@ use log::debug;
 use std::collections::BTreeMap;
 use std::fs::File;
 use std::io::Write;
-use std::os::fd::{AsRawFd, FromRawFd};
-use std::os::unix::io::BorrowedFd;
+use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
 use wayland_client::protocol::{
@@ -333,17 +332,12 @@ fn create_transparent_buffer(
 
     let shm = state.shm.as_ref().ok_or("wl_shm unavailable")?;
     let size = 4_i32;
-    let name = std::ffi::CString::new("d2b-clip-picker-shm")?;
-    let fd = unsafe { libc::memfd_create(name.as_ptr(), libc::MFD_CLOEXEC) };
-    if fd < 0 {
-        return Err(std::io::Error::last_os_error().into());
-    }
-    let mut file = unsafe { File::from_raw_fd(fd) };
+    let fd = rustix::fs::memfd_create("d2b-clip-picker-shm", rustix::fs::MemfdFlags::CLOEXEC)?;
+    let mut file = File::from(fd);
     file.set_len(size as u64)?;
     file.write_all(&[0, 0, 0, 0])?;
     file.flush()?;
-    let borrowed: BorrowedFd<'_> = unsafe { BorrowedFd::borrow_raw(file.as_raw_fd()) };
-    let pool = shm.create_pool(borrowed, size, &queue.handle(), ());
+    let pool = shm.create_pool(file.as_fd(), size, &queue.handle(), ());
     let buffer = pool.create_buffer(0, 1, 1, 4, wl_shm::Format::Argb8888, &queue.handle(), ());
     state.shm_pool = Some(pool);
     state.shm_file = Some(file);

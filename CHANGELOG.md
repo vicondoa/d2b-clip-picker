@@ -20,8 +20,13 @@
   warning level.
 - The README now describes the d2b-specific trust boundary, install path, flake
   outputs, protocol shape, and Cursor Clip acknowledgement.
+- The source flake output now produces a tarball with a standard top-level
+  `d2b-clip-picker-<version>/` directory.
 
 ### Fixed
 
 - Pointer-capture polling now processes readable Wayland events before hangup
   handling so final pointer/output events are not dropped during disconnect.
+- Pointer-capture shared memory now uses safe `rustix` memfd APIs, and picker
+  protocol frame reads use buffered bounded line reads instead of byte-at-a-time
+  polling.
