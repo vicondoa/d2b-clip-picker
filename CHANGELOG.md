@@ -30,3 +30,6 @@
 - Pointer-capture shared memory now uses safe `rustix` memfd APIs, and picker
   protocol frame reads use buffered bounded line reads instead of byte-at-a-time
   polling.
+- The inherited picker IPC fd is now rejected when it overlaps standard streams
+  and is marked close-on-exec immediately after adoption, preventing leaks into
+  GTK/GLib child processes.

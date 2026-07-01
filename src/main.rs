@@ -3,6 +3,7 @@ use d2b_clip_picker::placement::PickerPlacement;
 use d2b_clip_picker::protocol::{IpcPeer, OpenRequest};
 use d2b_clip_picker::ui;
 use log::{debug, error, info, warn};
+use rustix::io::{FdFlags, fcntl_getfd, fcntl_setfd};
 use std::env;
 use std::os::fd::FromRawFd;
 use std::os::unix::net::UnixStream;
@@ -42,17 +43,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         return Err("--ipc-fd must be greater than 2".into());
     }
 
-    let flags = unsafe { libc::fcntl(args.ipc_fd, libc::F_GETFD) };
-    if flags < 0 {
-        return Err(format!(
-            "--ipc-fd {} is not an open inherited file descriptor: {}",
-            args.ipc_fd,
-            std::io::Error::last_os_error()
-        )
-        .into());
-    }
-
     let stream = unsafe { UnixStream::from_raw_fd(args.ipc_fd) };
+    let flags = fcntl_getfd(&stream).map_err(|error| {
+        format!(
+            "--ipc-fd {} is not an open inherited file descriptor: {error}",
+            args.ipc_fd,
+        )
+    })?;
+    fcntl_setfd(&stream, flags | FdFlags::CLOEXEC)
+        .map_err(|error| format!("set --ipc-fd close-on-exec: {error}"))?;
     let mut peer = IpcPeer::new(stream)?;
     peer.send_client_hello()?;
     let request = match peer.read_clipd_frame()? {
