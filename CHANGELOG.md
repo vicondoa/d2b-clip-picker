@@ -22,6 +22,8 @@
   outputs, protocol shape, and Cursor Clip acknowledgement.
 - The source flake output now produces a tarball with a standard top-level
   `d2b-clip-picker-<version>/` directory.
+- Main-branch CI no longer cancels in-progress runs, preserving release and
+  artifact signals for every merge while PR validation remains in `pr.yml`.
 
 ### Fixed
 

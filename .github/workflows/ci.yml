@@ -3,7 +3,6 @@ name: CI
 on:
   push:
     branches: [main]
-  pull_request:
   workflow_dispatch:
 
 concurrency:
@@ -21,6 +20,8 @@ jobs:
             experimental-features = nix-command flakes
       - name: Format check
         run: nix develop --command cargo fmt --all -- --check
+      - name: Nix format check
+        run: nix fmt -- --check .
       - name: Clippy (deny warnings)
         run: nix develop --command cargo clippy --all-targets -- -D warnings
       - name: Tests
