@@ -6,26 +6,29 @@
 //! silently succeeding.
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::fd::BorrowedFd;
 use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
+use std::os::unix::process::CommandExt;
 use std::process::{Child, Command};
-
-fn clear_cloexec(stream: &UnixStream) {
-    let flags = rustix::io::fcntl_getfd(stream).expect("F_GETFD failed");
-    rustix::io::fcntl_setfd(stream, flags - rustix::io::FdFlags::CLOEXEC)
-        .expect("F_SETFD clear CLOEXEC failed");
-}
 
 fn spawn_picker() -> (UnixStream, Child) {
     let (parent, child) = UnixStream::pair().expect("socketpair");
     let child_fd = child.as_raw_fd();
-    clear_cloexec(&child);
 
-    let child_proc = Command::new(env!("CARGO_BIN_EXE_d2b-clip-picker"))
-        .arg("--ipc-fd")
-        .arg(child_fd.to_string())
-        .spawn()
-        .expect("spawn d2b-clip-picker");
+    let mut command = Command::new(env!("CARGO_BIN_EXE_d2b-clip-picker"));
+    command.arg("--ipc-fd").arg(child_fd.to_string());
+    unsafe {
+        command.pre_exec(move || {
+            let borrowed = BorrowedFd::borrow_raw(child_fd);
+            let flags = rustix::io::fcntl_getfd(borrowed)
+                .map_err(|err| std::io::Error::from_raw_os_error(err.raw_os_error()))?;
+            rustix::io::fcntl_setfd(borrowed, flags - rustix::io::FdFlags::CLOEXEC)
+                .map_err(|err| std::io::Error::from_raw_os_error(err.raw_os_error()))
+        });
+    }
+
+    let child_proc = command.spawn().expect("spawn d2b-clip-picker");
 
     drop(child);
     (parent, child_proc)
