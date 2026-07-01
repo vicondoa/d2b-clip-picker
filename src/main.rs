@@ -24,6 +24,7 @@ struct Args {
 }
 
 fn main() {
+    force_headless_safe_gtk_defaults();
     if let Err(err) = run() {
         error!("picker failed: {err}");
         std::process::exit(1);
@@ -36,11 +37,9 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .try_init()
         .ok();
 
-    force_headless_safe_gtk_defaults();
-
     let args = Args::parse();
-    if args.ipc_fd < 0 {
-        return Err("--ipc-fd must be non-negative".into());
+    if args.ipc_fd <= 2 {
+        return Err("--ipc-fd must be greater than 2".into());
     }
 
     let flags = unsafe { libc::fcntl(args.ipc_fd, libc::F_GETFD) };
