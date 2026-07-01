@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 pub const PROTOCOL_MIN: u16 = 1;
 pub const PROTOCOL_MAX: u16 = 1;
 pub const MAX_PICKER_FRAME_BYTES: usize = 4 * 1024;
-pub const MAX_OPEN_REQUEST_BYTES: usize = 1024 * 1024;
+pub const MAX_OPEN_REQUEST_BYTES: usize = 23_553_408;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

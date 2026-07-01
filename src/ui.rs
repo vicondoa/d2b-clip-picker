@@ -361,8 +361,7 @@ fn activate_candidate(candidate: &Candidate, ctx: &ActivationContext) {
         let mut pending = ctx.confirm_entry.borrow_mut();
         if pending.as_deref() != Some(candidate.entry_id.as_str()) {
             *pending = Some(candidate.entry_id.clone());
-            ctx.banner
-                .set_text("Confirmation required: activate this row again to select it.");
+            ctx.banner.set_text("Select this item again to confirm.");
             ctx.banner.set_visible(true);
             return;
         }

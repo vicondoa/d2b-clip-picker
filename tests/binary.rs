@@ -10,11 +10,10 @@ use std::os::unix::io::AsRawFd;
 use std::os::unix::net::UnixStream;
 use std::process::Command;
 
-fn clear_cloexec(fd: i32) {
-    let flags = unsafe { libc::fcntl(fd, libc::F_GETFD) };
-    assert!(flags >= 0, "F_GETFD failed");
-    let rc = unsafe { libc::fcntl(fd, libc::F_SETFD, flags & !libc::FD_CLOEXEC) };
-    assert_eq!(rc, 0, "F_SETFD clear CLOEXEC failed");
+fn clear_cloexec(stream: &UnixStream) {
+    let flags = rustix::io::fcntl_getfd(stream).expect("F_GETFD failed");
+    rustix::io::fcntl_setfd(stream, flags - rustix::io::FdFlags::CLOEXEC)
+        .expect("F_SETFD clear CLOEXEC failed");
 }
 
 /// Picker must exit non-zero when it receives a malformed / unrecognised
@@ -27,7 +26,7 @@ fn clear_cloexec(fd: i32) {
 fn picker_exits_nonzero_on_malformed_clipd_frame() {
     let (parent, child) = UnixStream::pair().expect("socketpair");
     let child_fd = child.as_raw_fd();
-    clear_cloexec(child_fd);
+    clear_cloexec(&child);
 
     let mut child_proc = Command::new(env!("CARGO_BIN_EXE_d2b-clip-picker"))
         .arg("--ipc-fd")
@@ -78,7 +77,7 @@ fn picker_exits_nonzero_on_malformed_clipd_frame() {
 fn picker_exits_nonzero_on_immediate_socket_close() {
     let (parent, child) = UnixStream::pair().expect("socketpair");
     let child_fd = child.as_raw_fd();
-    clear_cloexec(child_fd);
+    clear_cloexec(&child);
 
     let mut child_proc = Command::new(env!("CARGO_BIN_EXE_d2b-clip-picker"))
         .arg("--ipc-fd")

@@ -1,8 +1,7 @@
 use crate::protocol::PlacementHints;
-use log::debug;
+use log::{debug, warn};
 use std::collections::BTreeMap;
 use std::fs::File;
-use std::io::Write;
 use std::os::fd::AsFd;
 use std::time::{Duration, Instant};
 use wayland_client::globals::{GlobalList, GlobalListContents, registry_queue_init};
@@ -211,6 +210,7 @@ pub struct State {
     shm: Option<wl_shm::WlShm>,
     shm_pool: Option<wl_shm_pool::WlShmPool>,
     shm_file: Option<File>,
+    transparent_buffer_size: Option<(i32, i32)>,
     coords_received: bool,
     received_x: f64,
     received_y: f64,
@@ -239,6 +239,7 @@ impl State {
             shm: None,
             shm_pool: None,
             shm_file: None,
+            transparent_buffer_size: None,
             coords_received: false,
             received_x: 24.0,
             received_y: 24.0,
@@ -277,7 +278,7 @@ fn init_protocols(
             (),
         )
         .ok();
-    if state.single_pixel_buffer_manager.is_none() {
+    if state.single_pixel_buffer_manager.is_none() || state.viewporter.is_none() {
         state.shm = globals
             .bind::<wl_shm::WlShm, _, _>(&queue.handle(), 1..=1, ())
             .ok();
@@ -296,7 +297,9 @@ fn setup_capture_layer(
         .clone();
     let capture_surface = compositor.create_surface(&queue.handle(), ());
     state.capture_surface = Some(capture_surface.clone());
-    create_transparent_buffer(state, queue)?;
+    if state.viewporter.is_some() {
+        create_transparent_buffer(state, &queue.handle(), 1, 1)?;
+    }
     let layer_shell = state.layer_shell.as_ref().ok_or("layer shell missing")?;
     let capture_layer_surface = layer_shell.get_layer_surface(
         &capture_surface,
@@ -322,26 +325,52 @@ fn setup_capture_layer(
 
 fn create_transparent_buffer(
     state: &mut State,
-    queue: &EventQueue<State>,
+    qhandle: &QueueHandle<State>,
+    width: i32,
+    height: i32,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    if let Some(spbm) = state.single_pixel_buffer_manager.as_ref() {
+    if width <= 0 || height <= 0 {
+        return Err("transparent buffer dimensions must be positive".into());
+    }
+    if state.transparent_buffer_size == Some((width, height)) {
+        return Ok(());
+    }
+    clear_transparent_buffer(state);
+
+    if width == 1
+        && height == 1
+        && let Some(spbm) = state.single_pixel_buffer_manager.as_ref()
+    {
         state.transparent_buffer =
-            Some(spbm.create_u32_rgba_buffer(0x00, 0x00, 0x00, 0x00, &queue.handle(), ()));
+            Some(spbm.create_u32_rgba_buffer(0x00, 0x00, 0x00, 0x00, qhandle, ()));
+        state.transparent_buffer_size = Some((width, height));
         return Ok(());
     }
 
     let shm = state.shm.as_ref().ok_or("wl_shm unavailable")?;
-    let size = 4_i32;
+    let stride = width
+        .checked_mul(4)
+        .ok_or("transparent buffer stride overflow")?;
+    let size = stride
+        .checked_mul(height)
+        .ok_or("transparent buffer size overflow")?;
     let fd = rustix::fs::memfd_create("d2b-clip-picker-shm", rustix::fs::MemfdFlags::CLOEXEC)?;
-    let mut file = File::from(fd);
+    let file = File::from(fd);
     file.set_len(size as u64)?;
-    file.write_all(&[0, 0, 0, 0])?;
-    file.flush()?;
-    let pool = shm.create_pool(file.as_fd(), size, &queue.handle(), ());
-    let buffer = pool.create_buffer(0, 1, 1, 4, wl_shm::Format::Argb8888, &queue.handle(), ());
+    let pool = shm.create_pool(file.as_fd(), size, qhandle, ());
+    let buffer = pool.create_buffer(
+        0,
+        width,
+        height,
+        stride,
+        wl_shm::Format::Argb8888,
+        qhandle,
+        (),
+    );
     state.shm_pool = Some(pool);
     state.shm_file = Some(file);
     state.transparent_buffer = Some(buffer);
+    state.transparent_buffer_size = Some((width, height));
     Ok(())
 }
 
@@ -355,6 +384,10 @@ fn cleanup_capture_layer(state: &mut State) {
     if let Some(surface) = state.capture_surface.take() {
         surface.destroy();
     }
+    clear_transparent_buffer(state);
+}
+
+fn clear_transparent_buffer(state: &mut State) {
     if let Some(buffer) = state.transparent_buffer.take() {
         buffer.destroy();
     }
@@ -362,6 +395,7 @@ fn cleanup_capture_layer(state: &mut State) {
         pool.destroy();
     }
     state.shm_file.take();
+    state.transparent_buffer_size = None;
 }
 
 impl Dispatch<wl_seat::WlSeat, ()> for State {
@@ -454,7 +488,17 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for State {
                 state.monitor_width = width as i32;
                 state.monitor_height = height as i32;
             }
-            if let Some(surface) = &state.capture_surface {
+            if state.capture_surface.is_some() {
+                if state.viewporter.is_none()
+                    && let Err(error) =
+                        create_transparent_buffer(state, qhandle, width as i32, height as i32)
+                {
+                    warn!("failed to create pointer-capture buffer: {error}");
+                    return;
+                }
+                let Some(surface) = &state.capture_surface else {
+                    return;
+                };
                 if let Some(buffer) = &state.transparent_buffer {
                     surface.attach(Some(buffer), 0, 0);
                 }
