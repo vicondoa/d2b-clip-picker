@@ -111,7 +111,7 @@ impl ThemePalette {
             border: 2px solid {accent};
             border-radius: 10px;
             padding: 4px 8px;
-            margin: 8px 12px 2px 12px;
+            margin: 14px 12px 2px 12px;
         }}
         .clipboard-preview {{ opacity: 0.94; }}
         .realm-pill, .search-pill, .warning-pill {{
@@ -760,12 +760,7 @@ fn destination_label(request: &OpenRequest) -> String {
 }
 
 fn source_label(candidate: &Candidate) -> String {
-    let realm = sanitize_preview(&candidate.source_realm, 48);
-    match candidate.source_realm_kind {
-        RealmKind::Host => realm,
-        RealmKind::Vm => format!("{realm} VM"),
-        RealmKind::Unknown => realm,
-    }
+    sanitize_preview(&candidate.source_realm, 48)
 }
 
 fn app_source_label(candidate: &Candidate) -> String {
@@ -971,7 +966,7 @@ fn fallback_realm_color(realm: &str) -> String {
 /// Build a non-selectable realm group header row. `css_class` is the
 /// per-realm CSS class from `build_realm_css_classes`; pass `None` when no
 /// per-realm color is available.
-fn realm_header_row(realm: &str, kind: &RealmKind, css_class: Option<&str>) -> gtk4::ListBoxRow {
+fn realm_header_row(realm: &str, _kind: &RealmKind, css_class: Option<&str>) -> gtk4::ListBoxRow {
     let row = gtk4::ListBoxRow::new();
     row.set_selectable(false);
     row.set_activatable(false);
@@ -983,11 +978,7 @@ fn realm_header_row(realm: &str, kind: &RealmKind, css_class: Option<&str>) -> g
     }
 
     let name = sanitize_preview(realm, 48);
-    let label_text = match kind {
-        RealmKind::Vm => format!("{name} VM"),
-        _ => name,
-    };
-    let label = gtk4::Label::new(Some(&label_text));
+    let label = gtk4::Label::new(Some(&name));
     label.add_css_class("caption");
     label.set_halign(Align::Start);
     header_box.append(&label);
@@ -1038,6 +1029,7 @@ mod theme_tests {
         assert!(css.contains("background: alpha(#3584e4, 0.14);"));
         assert!(css.contains(".realm-group-header"));
         assert!(css.contains("border-radius: 10px;"));
+        assert!(css.contains("margin: 14px 12px 2px 12px;"));
     }
 
     #[test]
@@ -1045,6 +1037,25 @@ mod theme_tests {
         assert_eq!(fallback_realm_color("work"), fallback_realm_color("work"));
         assert!(is_safe_css_color(&fallback_realm_color("work")));
         assert_ne!(fallback_realm_color("work"), fallback_realm_color("dev"));
+    }
+
+    #[test]
+    fn source_label_keeps_realm_identity_pure() {
+        let candidate = Candidate {
+            entry_id: "entry".to_owned(),
+            source_realm: "dev".to_owned(),
+            source_realm_kind: RealmKind::Vm,
+            source_app: None,
+            source_app_id: None,
+            source_attribution: AttributionQuality::ExactClient,
+            preview_text: None,
+            content_type: "text/plain".to_owned(),
+            timestamp_unix_ms: None,
+            thumbnail_png_base64: None,
+            byte_count: None,
+            confirmation_required: false,
+        };
+        assert_eq!(source_label(&candidate), "dev");
     }
 
     #[test]

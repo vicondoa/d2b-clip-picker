@@ -21,6 +21,8 @@
 - Realm headers now derive a deterministic palette color when `d2b-clipd` does
   not provide display metadata, keeping screenshot/test fixtures visually
   realm-specific.
+- Realm headers now render pure realm names without a `VM` suffix and use more
+  top spacing so adjacent realm groups are visually distinct.
 - Keyboard navigation (Up/Down, j/k) now skips non-selectable realm header
   rows correctly.
 
