@@ -221,6 +221,7 @@ mod tests {
                 output: Some("DP-3".to_owned()),
             }),
             candidates: Vec::new(),
+            realm_display: Default::default(),
         };
 
         let placement = choose_placement(&request);
