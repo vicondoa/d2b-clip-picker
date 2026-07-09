@@ -18,6 +18,9 @@
 - Added `realm_header_background` to `ThemePalette` (default
   `alpha(#89b4fa, 0.10)`) as the fallback group header background when no
   per-realm color is provided by `d2b-clipd`.
+- Realm headers now derive a deterministic palette color when `d2b-clipd` does
+  not provide display metadata, keeping screenshot/test fixtures visually
+  realm-specific.
 - Keyboard navigation (Up/Down, j/k) now skips non-selectable realm header
   rows correctly.
 
