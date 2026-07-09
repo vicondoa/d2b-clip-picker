@@ -92,6 +92,7 @@ shape by hand or with another theme system.
   "accent": "#3584e4",
   "selected_background": "alpha(#3584e4, 0.14)",
   "realm_background": "alpha(#3584e4, 0.14)",
+  "realm_header_background": "alpha(#89b4fa, 0.10)",
   "search_background": "alpha(currentColor, 0.07)",
   "warning_background": "alpha(#f5c211, 0.22)"
 }
@@ -101,6 +102,19 @@ Fields accept normalized lowercase `#rrggbb` colors or GTK
 `alpha(#rrggbb, opacity)` / `alpha(currentColor, opacity)` expressions. The
 palette controls only picker shell presentation; it never grants clipboard
 authority or access to payload bytes.
+
+`realm_header_background` is the fallback background for realm group header
+rows when `d2b-clipd` does not supply a per-realm color in `realm_display`.
+
+## Realm grouping
+
+When a paste request includes candidates from more than one realm, the picker
+groups them with a non-selectable realm header row before each group. Header
+colors come from the optional `realm_display` map in the `OpenRequest` frame
+supplied by `d2b-clipd`. These colors are purely presentational; they do not
+influence which transfers are permitted. When `realm_display` is absent (older
+`d2b-clipd` versions), the theme's `realm_header_background` is used for all
+group headers.
 
 ## Flake outputs
 

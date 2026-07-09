@@ -4,7 +4,23 @@
 
 ### Added
 
-- Added `--theme-json <path>` so hosts can provide a generic, Stylix-agnostic
+- Clipboard sources and destinations are now grouped by realm in the picker
+  list. When candidates span more than one realm, a non-selectable realm group
+  header row appears before each group. Group headers use per-realm color hints
+  supplied by `d2b-clipd` in the new optional `realm_display` field of
+  `OpenRequest`; the field defaults to an empty map for backward compatibility
+  with older `d2b-clipd` versions.
+- Added `realm_display: HashMap<String, RealmDisplayMetadata>` to `OpenRequest`
+  (optional, `#[serde(default)]`). `RealmDisplayMetadata` carries an optional
+  `color` hint (`#rrggbb` or `alpha(...)`) for the group header background.
+  Colors are validated against the same safe-CSS allowlist as the theme palette
+  and are used only for presentation; they carry no authorization weight.
+- Added `realm_header_background` to `ThemePalette` (default
+  `alpha(#89b4fa, 0.10)`) as the fallback group header background when no
+  per-realm color is provided by `d2b-clipd`.
+- Keyboard navigation (Up/Down, j/k) now skips non-selectable realm header
+  rows correctly.
+
   GTK palette for picker shell colors without giving the picker clipboard or
   compositor authority.
 - The picker now uses Layer Shell top-layer overlay presentation with output

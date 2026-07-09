@@ -1,6 +1,6 @@
 use d2b_clip_picker::protocol::{
     AttributionQuality, Candidate, ClipdFrame, DestinationMetadata, IpcPeer, OpenRequest,
-    PlacementHints, RealmKind, sanitize_preview,
+    PlacementHints, RealmDisplayMetadata, RealmKind, sanitize_preview,
 };
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -46,6 +46,7 @@ fn sample_request() -> OpenRequest {
             byte_count: Some(5),
             confirmation_required: false,
         }],
+        realm_display: Default::default(),
     }
 }
 
@@ -123,4 +124,86 @@ fn fake_clipd_cancel_roundtrip() {
 fn previews_are_inert_plain_text() {
     let sanitized = sanitize_preview("<b>x</b>\u{1b}[31m\nnext\u{0007}", 128);
     assert_eq!(sanitized, "<b>x</b> next�");
+}
+
+/// Older `d2b-clipd` versions do not emit `realm_display`; the field must
+/// default to an empty map so the picker remains backward-compatible.
+#[test]
+fn open_request_without_realm_display_deserializes_to_empty_map() {
+    let json = serde_json::json!({
+        "type": "open_request",
+        "selected_protocol_version": 1,
+        "clipd_version": "0.1.0",
+        "picker_version": "0.1.0",
+        "request_id": "req-2",
+        "destination": {
+            "realm": "personal",
+            "realm_kind": "vm"
+        },
+        "requested_mime_type": "text/plain",
+        "candidates": []
+    });
+    let frame: ClipdFrame = serde_json::from_value(json).expect("parse without realm_display");
+    let ClipdFrame::OpenRequest(req) = frame else {
+        panic!("expected OpenRequest");
+    };
+    assert!(
+        req.realm_display.is_empty(),
+        "realm_display must default to empty map"
+    );
+}
+
+/// When `d2b-clipd` supplies `realm_display`, the picker parses the color
+/// hint as presentation metadata only.
+#[test]
+fn open_request_with_realm_display_parses_color_hint() {
+    let json = serde_json::json!({
+        "type": "open_request",
+        "selected_protocol_version": 1,
+        "clipd_version": "0.1.0",
+        "picker_version": "0.1.0",
+        "request_id": "req-3",
+        "destination": {
+            "realm": "work",
+            "realm_kind": "vm"
+        },
+        "requested_mime_type": "text/plain",
+        "candidates": [],
+        "realm_display": {
+            "work": { "color": "#4a9eff" },
+            "host": {}
+        }
+    });
+    let frame: ClipdFrame = serde_json::from_value(json).expect("parse with realm_display");
+    let ClipdFrame::OpenRequest(req) = frame else {
+        panic!("expected OpenRequest");
+    };
+    assert_eq!(
+        req.realm_display
+            .get("work")
+            .and_then(|m| m.color.as_deref()),
+        Some("#4a9eff"),
+        "work realm color must round-trip"
+    );
+    assert!(
+        req.realm_display
+            .get("host")
+            .and_then(|m| m.color.as_deref())
+            .is_none(),
+        "host realm without color must produce None"
+    );
+}
+
+/// `RealmDisplayMetadata` with no fields must accept an empty JSON object.
+#[test]
+fn realm_display_metadata_accepts_empty_object() {
+    let meta: RealmDisplayMetadata = serde_json::from_str("{}").expect("empty object");
+    assert!(meta.color.is_none());
+}
+
+/// `RealmDisplayMetadata` with `color: null` must produce `None`.
+#[test]
+fn realm_display_metadata_accepts_null_color() {
+    let meta: RealmDisplayMetadata = serde_json::from_str(r#"{"color":null}"#).expect("null color");
+    assert!(meta.color.is_none());
 }

@@ -1,7 +1,8 @@
 use crate::placement::PickerPlacement;
 use crate::protocol::{
     AttributionQuality, Candidate, ClipdFrame, IpcPeer, MAX_OPEN_REQUEST_BYTES, OpenRequest,
-    PickerTx, RealmKind, display_content_kind, read_bounded_line, sanitize_preview,
+    PickerTx, RealmDisplayMetadata, RealmKind, display_content_kind, read_bounded_line,
+    sanitize_preview,
 };
 use base64::Engine;
 use gtk4::gdk::prelude::MonitorExt;
@@ -12,6 +13,7 @@ use libadwaita::{self as adw, prelude::*};
 use log::{info, warn};
 use serde::Deserialize;
 use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc;
@@ -26,6 +28,9 @@ pub struct ThemePalette {
     pub accent: String,
     pub selected_background: String,
     pub realm_background: String,
+    /// Background for realm group-header rows. Applies when `d2b-clipd` does
+    /// not supply a per-realm color in `realm_display`.
+    pub realm_header_background: String,
     pub search_background: String,
     pub warning_background: String,
 }
@@ -39,6 +44,7 @@ impl Default for ThemePalette {
             accent: "#3584e4".to_owned(),
             selected_background: "alpha(#3584e4, 0.14)".to_owned(),
             realm_background: "alpha(#3584e4, 0.14)".to_owned(),
+            realm_header_background: "alpha(#89b4fa, 0.10)".to_owned(),
             search_background: "alpha(currentColor, 0.07)".to_owned(),
             warning_background: "alpha(#f5c211, 0.22)".to_owned(),
         }
@@ -61,6 +67,7 @@ impl ThemePalette {
             ("accent", &self.accent),
             ("selected_background", &self.selected_background),
             ("realm_background", &self.realm_background),
+            ("realm_header_background", &self.realm_header_background),
             ("search_background", &self.search_background),
             ("warning_background", &self.warning_background),
         ] {
@@ -108,6 +115,12 @@ impl ThemePalette {
         .realm-pill {{ background: {realm_background}; }}
         .search-pill {{ background: {search_background}; }}
         .warning-pill {{ background: {warning_background}; }}
+        .realm-group-header {{
+            background: {realm_header_background};
+            border-radius: 6px;
+            padding: 3px 8px;
+            margin: 6px 12px 2px;
+        }}
         ",
             background = self.background,
             foreground = self.foreground,
@@ -115,6 +128,7 @@ impl ThemePalette {
             accent = self.accent,
             selected_background = self.selected_background,
             realm_background = self.realm_background,
+            realm_header_background = self.realm_header_background,
             search_background = self.search_background,
             warning_background = self.warning_background,
         )
@@ -248,6 +262,12 @@ fn create_window(
     }
 
     apply_css(&window, &theme);
+
+    // Build the stable realm→CSS-class mapping for this request's candidates.
+    // The CSS-class names are presentation-only and carry no authz meaning.
+    let realm_css_classes = Rc::new(build_realm_css_classes(&request.candidates));
+    apply_realm_colors_css(&window, &request.realm_display, &realm_css_classes);
+
     let sent_terminal = Rc::new(Cell::new(false));
     let confirm_entry = Rc::new(RefCell::new(None::<String>));
     let search = Rc::new(RefCell::new(String::new()));
@@ -316,10 +336,13 @@ fn create_window(
     main_box.append(&scrolled);
     window.set_content(Some(&main_box));
 
-    rebuild_rows(&list_box, &request.candidates, &search.borrow(), &displayed);
-    if let Some(first) = list_box.row_at_index(0) {
-        list_box.select_row(Some(&first));
-    }
+    rebuild_grouped_rows(
+        &list_box,
+        &request.candidates,
+        &search.borrow(),
+        &displayed,
+        &realm_css_classes,
+    );
 
     let app_for_close = app.clone();
     let tx_for_close = tx.clone();
@@ -363,10 +386,15 @@ fn create_window(
         });
     }
     let displayed_for_activation = displayed.clone();
-    let activation_for_click = activation.clone();
+    let activation_for_row_activated = activation.clone();
     list_box.connect_row_activated(move |_, row| {
-        if let Some(candidate) = displayed_for_activation.borrow().get(row.index() as usize) {
-            activate_candidate(candidate, &activation_for_click);
+        let entry_id = row.widget_name();
+        if let Some(candidate) = displayed_for_activation
+            .borrow()
+            .iter()
+            .find(|c| c.entry_id.as_str() == entry_id.as_str())
+        {
+            activate_candidate(candidate, &activation_for_row_activated);
         }
     });
     let click_controller = gtk4::GestureClick::new();
@@ -374,12 +402,15 @@ fn create_window(
     let displayed_for_click_select = displayed.clone();
     let activation_for_single_click = activation.clone();
     click_controller.connect_released(move |_, _, _, _| {
-        if let Some(row) = list_for_click.selected_row()
-            && let Some(candidate) = displayed_for_click_select
+        if let Some(row) = list_for_click.selected_row() {
+            let entry_id = row.widget_name();
+            if let Some(candidate) = displayed_for_click_select
                 .borrow()
-                .get(row.index() as usize)
-        {
-            activate_candidate(candidate, &activation_for_single_click);
+                .iter()
+                .find(|c| c.entry_id.as_str() == entry_id.as_str())
+            {
+                activate_candidate(candidate, &activation_for_single_click);
+            }
         }
     });
     list_box.add_controller(click_controller);
@@ -391,6 +422,7 @@ fn create_window(
     let search_for_keys = search.clone();
     let search_label_for_keys = search_label.clone();
     let activation_for_keys = activation.clone();
+    let realm_css_classes_for_keys = realm_css_classes.clone();
     key_controller.connect_key_pressed(move |_, key, _keycode, modifiers| {
         use gdk::Key;
         if modifiers.contains(gdk::ModifierType::CONTROL_MASK) && key == Key::v {
@@ -411,11 +443,16 @@ fn create_window(
                 glib::Propagation::Stop
             }
             Key::Return | Key::KP_Enter => {
-                if let Some(row) = list_for_keys.selected_row()
-                    && let Some(candidate) = displayed_for_keys.borrow().get(row.index() as usize)
-                {
-                    activate_candidate(candidate, &activation_for_keys);
-                    return glib::Propagation::Stop;
+                if let Some(row) = list_for_keys.selected_row() {
+                    let entry_id = row.widget_name();
+                    if let Some(candidate) = displayed_for_keys
+                        .borrow()
+                        .iter()
+                        .find(|c| c.entry_id.as_str() == entry_id.as_str())
+                    {
+                        activate_candidate(candidate, &activation_for_keys);
+                        return glib::Propagation::Stop;
+                    }
                 }
                 glib::Propagation::Proceed
             }
@@ -427,6 +464,7 @@ fn create_window(
                     &list_for_keys,
                     &request_for_keys.candidates,
                     &displayed_for_keys,
+                    &realm_css_classes_for_keys,
                 );
                 glib::Propagation::Stop
             }
@@ -442,6 +480,7 @@ fn create_window(
                         &list_for_keys,
                         &request_for_keys.candidates,
                         &displayed_for_keys,
+                        &realm_css_classes_for_keys,
                     );
                     return glib::Propagation::Stop;
                 }
@@ -498,6 +537,7 @@ fn update_search(
     list_box: &gtk4::ListBox,
     candidates: &[Candidate],
     displayed: &Rc<RefCell<Vec<Candidate>>>,
+    realm_css_classes: &HashMap<String, String>,
 ) {
     let query = search.borrow();
     if query.is_empty() {
@@ -505,10 +545,7 @@ fn update_search(
     } else {
         label.set_text(&format!("Search: {query}"));
     }
-    rebuild_rows(list_box, candidates, &query, displayed);
-    if let Some(first) = list_box.row_at_index(0) {
-        list_box.select_row(Some(&first));
-    }
+    rebuild_grouped_rows(list_box, candidates, &query, displayed, realm_css_classes);
 }
 
 fn find_monitor(output: &str) -> Option<gdk::Monitor> {
@@ -540,24 +577,26 @@ fn default_monitor() -> Option<gdk::Monitor> {
     monitors.item(0)?.downcast::<gdk::Monitor>().ok()
 }
 
-fn rebuild_rows(
+/// Rebuild the list box rows grouped by realm, with a non-selectable realm
+/// header row before each group. Selects the first selectable row after
+/// rebuilding. `displayed` is updated to the filtered selectable candidates.
+fn rebuild_grouped_rows(
     list_box: &gtk4::ListBox,
     candidates: &[Candidate],
     query: &str,
     displayed: &Rc<RefCell<Vec<Candidate>>>,
+    realm_css_classes: &HashMap<String, String>,
 ) {
     while let Some(child) = list_box.first_child() {
         list_box.remove(&child);
     }
-    let query = query.to_lowercase();
-    let mut visible = Vec::new();
-    for candidate in candidates
+
+    let query_lower = query.to_lowercase();
+    let visible: Vec<&Candidate> = candidates
         .iter()
-        .filter(|candidate| candidate_matches(candidate, &query))
-    {
-        visible.push(candidate.clone());
-        list_box.append(&candidate_row(candidate));
-    }
+        .filter(|c| candidate_matches(c, &query_lower))
+        .collect();
+
     if visible.is_empty() {
         let row = gtk4::ListBoxRow::new();
         row.set_selectable(false);
@@ -568,8 +607,54 @@ fn rebuild_rows(
         label.set_margin_bottom(24);
         row.set_child(Some(&label));
         list_box.append(&row);
+        *displayed.borrow_mut() = Vec::new();
+        return;
     }
-    *displayed.borrow_mut() = visible;
+
+    // Group candidates by realm, preserving the order of first appearance.
+    let mut realm_order: Vec<String> = Vec::new();
+    let mut groups: HashMap<String, Vec<&Candidate>> = HashMap::new();
+    for candidate in &visible {
+        let realm = candidate.source_realm.clone();
+        if !groups.contains_key(&realm) {
+            realm_order.push(realm.clone());
+            groups.insert(realm.clone(), Vec::new());
+        }
+        groups.get_mut(&realm).unwrap().push(candidate);
+    }
+
+    let multi_realm = realm_order.len() > 1;
+    let mut all_visible: Vec<Candidate> = Vec::new();
+
+    for realm in &realm_order {
+        if multi_realm {
+            let first = groups[realm][0];
+            let css_class = realm_css_classes.get(realm).map(String::as_str);
+            list_box.append(&realm_header_row(
+                realm,
+                &first.source_realm_kind,
+                css_class,
+            ));
+        }
+        for candidate in &groups[realm] {
+            let row = candidate_row(candidate);
+            row.set_widget_name(&candidate.entry_id);
+            list_box.append(&row);
+            all_visible.push((*candidate).clone());
+        }
+    }
+
+    *displayed.borrow_mut() = all_visible;
+
+    // Select the first selectable row (skips any leading realm header rows).
+    let mut idx = 0i32;
+    while let Some(row) = list_box.row_at_index(idx) {
+        if row.is_selectable() {
+            list_box.select_row(Some(&row));
+            break;
+        }
+        idx += 1;
+    }
 }
 
 fn candidate_matches(candidate: &Candidate, query: &str) -> bool {
@@ -748,10 +833,17 @@ fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
 
 fn select_relative(list_box: &gtk4::ListBox, delta: i32) {
     let current = list_box.selected_row().map(|row| row.index()).unwrap_or(0);
-    let next = (current + delta).max(0);
-    if let Some(row) = list_box.row_at_index(next) {
-        list_box.select_row(Some(&row));
-        row.grab_focus();
+    let mut next = current + delta;
+    loop {
+        match list_box.row_at_index(next) {
+            None => break,
+            Some(row) if row.is_selectable() => {
+                list_box.select_row(Some(&row));
+                row.grab_focus();
+                break;
+            }
+            Some(_) => next += delta,
+        }
     }
 }
 
@@ -797,6 +889,83 @@ fn apply_css(window: &adw::ApplicationWindow, theme: &ThemePalette) {
         &provider,
         gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+}
+
+/// Build a stable mapping from realm name to CSS class name for this session.
+/// The CSS class names are `d2b-realm-header-<idx>` and are used solely for
+/// per-realm color overrides on group header rows.
+fn build_realm_css_classes(candidates: &[Candidate]) -> HashMap<String, String> {
+    let mut map = HashMap::new();
+    let mut idx = 0usize;
+    for candidate in candidates {
+        let realm = &candidate.source_realm;
+        if !map.contains_key(realm) {
+            map.insert(realm.clone(), format!("d2b-realm-header-{idx}"));
+            idx += 1;
+        }
+    }
+    map
+}
+
+/// Inject per-realm color CSS for group headers, using colors from
+/// `realm_display` supplied by `d2b-clipd`. Colors are presentation-only and
+/// carry no authorization weight. Colors that fail safe-CSS validation are
+/// silently ignored, falling back to the palette's `realm_header_background`.
+fn apply_realm_colors_css(
+    window: &adw::ApplicationWindow,
+    realm_display: &HashMap<String, RealmDisplayMetadata>,
+    realm_css_classes: &HashMap<String, String>,
+) {
+    let mut css = String::new();
+    for (realm, class) in realm_css_classes {
+        if let Some(meta) = realm_display.get(realm)
+            && let Some(color) = &meta.color
+            && is_safe_css_color(color)
+        {
+            let bg = if is_hex_color(color) {
+                format!("alpha({color}, 0.14)")
+            } else {
+                color.clone()
+            };
+            css += &format!(".{class} {{ background: {bg}; }}\n");
+        }
+    }
+    if !css.is_empty() {
+        let provider = gtk4::CssProvider::new();
+        provider.load_from_data(&css);
+        gtk4::style_context_add_provider_for_display(
+            &gtk4::prelude::WidgetExt::display(window),
+            &provider,
+            gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
+        );
+    }
+}
+
+/// Build a non-selectable realm group header row. `css_class` is the
+/// per-realm CSS class from `build_realm_css_classes`; pass `None` when no
+/// per-realm color is available.
+fn realm_header_row(realm: &str, kind: &RealmKind, css_class: Option<&str>) -> gtk4::ListBoxRow {
+    let row = gtk4::ListBoxRow::new();
+    row.set_selectable(false);
+    row.set_activatable(false);
+
+    let header_box = gtk4::Box::new(Orientation::Horizontal, 4);
+    header_box.add_css_class("realm-group-header");
+    if let Some(class) = css_class {
+        header_box.add_css_class(class);
+    }
+
+    let name = sanitize_preview(realm, 48);
+    let label_text = match kind {
+        RealmKind::Vm => format!("{name} VM"),
+        _ => name,
+    };
+    let label = gtk4::Label::new(Some(&label_text));
+    label.add_css_class("caption");
+    label.set_halign(Align::Start);
+    header_box.append(&label);
+    row.set_child(Some(&header_box));
+    row
 }
 
 fn is_safe_css_color(value: &str) -> bool {
@@ -851,6 +1020,7 @@ mod theme_tests {
             accent: "#313233".to_owned(),
             selected_background: "alpha(#313233, 0.14)".to_owned(),
             realm_background: "alpha(#313233, 0.14)".to_owned(),
+            realm_header_background: "alpha(#313233, 0.10)".to_owned(),
             search_background: "alpha(currentColor, 0.07)".to_owned(),
             warning_background: "alpha(#414243, 1)".to_owned(),
         };

@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
@@ -62,6 +63,12 @@ pub struct OpenRequest {
     #[serde(default)]
     pub placement_hints: Option<PlacementHints>,
     pub candidates: Vec<Candidate>,
+    /// Presentation-only per-realm display metadata keyed by realm name.
+    /// Absent realms fall back to the picker's theme palette defaults.
+    /// This field is optional and defaults to an empty map when omitted by
+    /// older `d2b-clipd` versions.
+    #[serde(default)]
+    pub realm_display: HashMap<String, RealmDisplayMetadata>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
@@ -99,6 +106,21 @@ pub enum AttributionQuality {
     FocusedWindowGuess,
     CacheStaleFocusedWindowGuess,
     BrokerInjectedDebug,
+}
+
+/// Presentation-only realm display metadata supplied by `d2b-clipd`.
+///
+/// This is used solely for grouping and coloring the realm headers in the
+/// picker UI. It carries no authorization weight; trust decisions remain
+/// inside `d2b-clipd`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
+pub struct RealmDisplayMetadata {
+    /// Optional CSS-safe color hint (`#rrggbb` or `alpha(#rrggbb, opacity)`)
+    /// for the realm group header. Unused if absent or if the value fails the
+    /// picker's safe-color validation.
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
