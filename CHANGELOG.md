@@ -25,8 +25,10 @@
   top spacing so adjacent realm groups are visually distinct.
 - The picker shell border now follows the destination realm color when
   `realm_display` includes one, and realm headers use a compact pill shape.
-- Keyboard navigation (Up/Down, j/k) now skips non-selectable realm header
-  rows correctly.
+- Clipboard source rows now carry their source realm as a rounded item border
+  plus left color rail instead of rendering separate realm header rows.
+- Keyboard navigation remains on selectable clipboard rows because realm
+  identity is now part of each row rather than a separate header row.
 
   GTK palette for picker shell colors without giving the picker clipboard or
   compositor authority.

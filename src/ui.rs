@@ -107,11 +107,10 @@ impl ThemePalette {
         }}
         .clipboard-item:hover {{ border-color: {accent}; }}
         .clipboard-item:selected {{ border-color: {accent}; background: {selected_background}; }}
-        .realm-group-header {{
-            border: 2px solid {accent};
-            border-radius: 10px;
-            padding: 4px 8px;
-            margin: 14px 12px 2px 12px;
+        .realm-rail {{
+            background: {accent};
+            border-radius: 999px 0 0 999px;
+            min-width: 5px;
         }}
         .clipboard-preview {{ opacity: 0.94; }}
         .realm-pill, .search-pill, .warning-pill {{
@@ -121,12 +120,6 @@ impl ThemePalette {
         .realm-pill {{ background: {realm_background}; }}
         .search-pill {{ background: {search_background}; }}
         .warning-pill {{ background: {warning_background}; }}
-        .realm-group-header {{
-            background: {realm_header_background};
-            border-radius: 999px;
-            padding: 3px 10px;
-            margin: 16px 108px 2px 12px;
-        }}
         ",
             background = self.background,
             foreground = self.foreground,
@@ -134,7 +127,6 @@ impl ThemePalette {
             accent = self.accent,
             selected_background = self.selected_background,
             realm_background = self.realm_background,
-            realm_header_background = self.realm_header_background,
             search_background = self.search_background,
             warning_background = self.warning_background,
         )
@@ -634,21 +626,12 @@ fn rebuild_grouped_rows(
         groups.get_mut(&realm).unwrap().push(candidate);
     }
 
-    let multi_realm = realm_order.len() > 1;
     let mut all_visible: Vec<Candidate> = Vec::new();
 
     for realm in &realm_order {
-        if multi_realm {
-            let first = groups[realm][0];
-            let css_class = realm_css_classes.get(realm).map(String::as_str);
-            list_box.append(&realm_header_row(
-                realm,
-                &first.source_realm_kind,
-                css_class,
-            ));
-        }
+        let css_class = realm_css_classes.get(realm).map(String::as_str);
         for candidate in &groups[realm] {
-            let row = candidate_row(candidate);
+            let row = candidate_row(candidate, css_class);
             row.set_widget_name(&candidate.entry_id);
             list_box.append(&row);
             all_visible.push((*candidate).clone());
@@ -684,14 +667,22 @@ fn candidate_matches(candidate: &Candidate, query: &str) -> bool {
     haystack.contains(query)
 }
 
-fn candidate_row(candidate: &Candidate) -> gtk4::ListBoxRow {
+fn candidate_row(candidate: &Candidate, css_class: Option<&str>) -> gtk4::ListBoxRow {
     let row = gtk4::ListBoxRow::new();
     row.add_css_class("clipboard-item");
+    if let Some(class) = css_class {
+        row.add_css_class(class);
+    }
+    let item = gtk4::Box::new(Orientation::Horizontal, 0);
+    let rail = gtk4::Box::new(Orientation::Vertical, 0);
+    rail.add_css_class("realm-rail");
+    item.append(&rail);
     let main = gtk4::Box::new(Orientation::Vertical, 6);
     main.set_margin_top(10);
     main.set_margin_bottom(10);
     main.set_margin_start(12);
     main.set_margin_end(12);
+    main.set_hexpand(true);
 
     let header = gtk4::Box::new(Orientation::Horizontal, 8);
     let (kind, icon) = display_content_kind(&candidate.content_type);
@@ -746,7 +737,8 @@ fn candidate_row(candidate: &Candidate) -> gtk4::ListBoxRow {
         main.append(&confirm);
     }
 
-    row.set_child(Some(&main));
+    item.append(&main);
+    row.set_child(Some(&item));
     row
 }
 
@@ -952,7 +944,9 @@ fn apply_realm_colors_css(
             } else {
                 color.to_owned()
             };
-            css += &format!(".{class} {{ background: {bg}; border-color: {color}; }}\n");
+            css += &format!(
+                ".{class} {{ border-color: {color}; }}\n.{class} .realm-rail {{ background: {color}; }}\n.{class}:selected {{ background: {bg}; }}\n"
+            );
         }
     }
     if !css.is_empty() {
@@ -976,29 +970,6 @@ fn fallback_realm_color(realm: &str) -> String {
         hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
     }
     PALETTE[(hash as usize) % PALETTE.len()].to_owned()
-}
-
-/// Build a non-selectable realm group header row. `css_class` is the
-/// per-realm CSS class from `build_realm_css_classes`; pass `None` when no
-/// per-realm color is available.
-fn realm_header_row(realm: &str, _kind: &RealmKind, css_class: Option<&str>) -> gtk4::ListBoxRow {
-    let row = gtk4::ListBoxRow::new();
-    row.set_selectable(false);
-    row.set_activatable(false);
-
-    let header_box = gtk4::Box::new(Orientation::Horizontal, 4);
-    header_box.add_css_class("realm-group-header");
-    if let Some(class) = css_class {
-        header_box.add_css_class(class);
-    }
-
-    let name = sanitize_preview(realm, 48);
-    let label = gtk4::Label::new(Some(&name));
-    label.add_css_class("caption");
-    label.set_halign(Align::Start);
-    header_box.append(&label);
-    row.set_child(Some(&header_box));
-    row
 }
 
 fn is_safe_css_color(value: &str) -> bool {
@@ -1042,10 +1013,8 @@ mod theme_tests {
         assert!(css.contains("background-color: #1e1e2e;"));
         assert!(css.contains("border: 2px solid #89b4fa;"));
         assert!(css.contains("background: alpha(#3584e4, 0.14);"));
-        assert!(css.contains(".realm-group-header"));
-        assert!(css.contains("border-radius: 10px;"));
-        assert!(css.contains("border-radius: 999px;"));
-        assert!(css.contains("margin: 16px 108px 2px 12px;"));
+        assert!(css.contains(".realm-rail"));
+        assert!(css.contains("border-radius: 999px 0 0 999px;"));
     }
 
     #[test]
