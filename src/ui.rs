@@ -123,9 +123,9 @@ impl ThemePalette {
         .warning-pill {{ background: {warning_background}; }}
         .realm-group-header {{
             background: {realm_header_background};
-            border-radius: 6px;
-            padding: 3px 8px;
-            margin: 6px 12px 2px;
+            border-radius: 999px;
+            padding: 3px 10px;
+            margin: 16px 108px 2px 12px;
         }}
         ",
             background = self.background,
@@ -272,7 +272,12 @@ fn create_window(
     // Build the stable realm→CSS-class mapping for this request's candidates.
     // The CSS-class names are presentation-only and carry no authz meaning.
     let realm_css_classes = Rc::new(build_realm_css_classes(&request.candidates));
-    apply_realm_colors_css(&window, &request.realm_display, &realm_css_classes);
+    apply_realm_colors_css(
+        &window,
+        &request.destination.realm,
+        &request.realm_display,
+        &realm_css_classes,
+    );
 
     let sent_terminal = Rc::new(Cell::new(false));
     let confirm_entry = Rc::new(RefCell::new(None::<String>));
@@ -914,10 +919,20 @@ fn build_realm_css_classes(candidates: &[Candidate]) -> HashMap<String, String> 
 /// silently ignored, falling back to the palette's `realm_header_background`.
 fn apply_realm_colors_css(
     window: &adw::ApplicationWindow,
+    destination_realm: &str,
     realm_display: &HashMap<String, RealmDisplayMetadata>,
     realm_css_classes: &HashMap<String, String>,
 ) {
     let mut css = String::new();
+    if let Some(color) = realm_display
+        .get(destination_realm)
+        .and_then(|meta| meta.color.as_deref())
+        .filter(|color| is_safe_css_color(color))
+    {
+        css += &format!(
+            "window.d2b-clip-picker, .d2b-clip-picker-root {{ border-color: {color}; }}\n"
+        );
+    }
     for (realm, class) in realm_css_classes {
         let configured = realm_display
             .get(realm)
@@ -1029,7 +1044,8 @@ mod theme_tests {
         assert!(css.contains("background: alpha(#3584e4, 0.14);"));
         assert!(css.contains(".realm-group-header"));
         assert!(css.contains("border-radius: 10px;"));
-        assert!(css.contains("margin: 14px 12px 2px 12px;"));
+        assert!(css.contains("border-radius: 999px;"));
+        assert!(css.contains("margin: 16px 108px 2px 12px;"));
     }
 
     #[test]
