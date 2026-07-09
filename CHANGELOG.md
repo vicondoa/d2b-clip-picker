@@ -35,8 +35,9 @@
 - Host clipboard rows now show the host realm label without the noisy
   `(best effort)` suffix while rendering focused-window attribution as a
   `Focused-window guess` detail.
-- Clipboard rows now use deterministic source-realm colored outer borders so
-  realm grouping is visually consistent with the other d2b desktop companions.
+- Clipboard realm group headers now carry source-realm colored borders while
+  clipboard rows keep neutral inner styling, matching the other d2b desktop
+  companions.
 - Normal placement and test-select diagnostics now log at info level instead of
   warning level.
 - The README now describes the d2b-specific trust boundary, install path, flake
