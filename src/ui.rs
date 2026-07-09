@@ -924,14 +924,23 @@ fn apply_realm_colors_css(
 ) {
     let mut css = String::new();
     for (realm, class) in realm_css_classes {
-        if let Some(meta) = realm_display.get(realm)
-            && let Some(color) = &meta.color
-            && is_safe_css_color(color)
-        {
+        let configured = realm_display
+            .get(realm)
+            .and_then(|meta| meta.color.as_deref())
+            .filter(|color| is_safe_css_color(color));
+        let fallback;
+        let color = match configured {
+            Some(color) => color,
+            None => {
+                fallback = fallback_realm_color(realm);
+                fallback.as_str()
+            }
+        };
+        if is_safe_css_color(color) {
             let bg = if is_hex_color(color) {
                 format!("alpha({color}, 0.14)")
             } else {
-                color.clone()
+                color.to_owned()
             };
             css += &format!(".{class} {{ background: {bg}; border-color: {color}; }}\n");
         }
@@ -945,6 +954,18 @@ fn apply_realm_colors_css(
             gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
     }
+}
+
+fn fallback_realm_color(realm: &str) -> String {
+    const PALETTE: [&str; 12] = [
+        "#7fc8ff", "#90d090", "#ffb347", "#c8a0e0", "#ff8080", "#40e0d0", "#ffd700", "#ff69b4",
+        "#a0c8a0", "#d4a0ff", "#ffa07a", "#87ceeb",
+    ];
+    let mut hash = 0_u64;
+    for byte in format!("d2b-env-accent-{realm}").bytes() {
+        hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
+    }
+    PALETTE[(hash as usize) % PALETTE.len()].to_owned()
 }
 
 /// Build a non-selectable realm group header row. `css_class` is the
@@ -1017,6 +1038,13 @@ mod theme_tests {
         assert!(css.contains("background: alpha(#3584e4, 0.14);"));
         assert!(css.contains(".realm-group-header"));
         assert!(css.contains("border-radius: 10px;"));
+    }
+
+    #[test]
+    fn fallback_realm_color_is_deterministic_and_safe() {
+        assert_eq!(fallback_realm_color("work"), fallback_realm_color("work"));
+        assert!(is_safe_css_color(&fallback_realm_color("work")));
+        assert_ne!(fallback_realm_color("work"), fallback_realm_color("dev"));
     }
 
     #[test]
