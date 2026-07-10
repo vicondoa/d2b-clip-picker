@@ -100,6 +100,7 @@ impl ThemePalette {
         .clipboard-list {{ background: transparent; }}
         .clipboard-item {{
             border: 1px solid {border};
+            border-left-width: 5px;
             border-radius: 10px;
             padding: 4px;
             margin: 6px 12px;
@@ -107,11 +108,6 @@ impl ThemePalette {
         }}
         .clipboard-item:hover {{ background: {search_background}; }}
         .clipboard-item:selected {{ background: {selected_background}; }}
-        .realm-rail {{
-            background: {accent};
-            border-radius: 0;
-            min-width: 5px;
-        }}
         .clipboard-preview {{ opacity: 0.94; }}
         .realm-pill, .search-pill, .warning-pill {{
             border-radius: 999px;
@@ -125,7 +121,6 @@ impl ThemePalette {
             background = self.background,
             foreground = self.foreground,
             border = self.border,
-            accent = self.accent,
             selected_background = self.selected_background,
             realm_background = self.realm_background,
             search_background = self.search_background,
@@ -674,10 +669,6 @@ fn candidate_row(candidate: &Candidate, css_class: Option<&str>) -> gtk4::ListBo
     if let Some(class) = css_class {
         row.add_css_class(class);
     }
-    let item = gtk4::Box::new(Orientation::Horizontal, 0);
-    let rail = gtk4::Box::new(Orientation::Vertical, 0);
-    rail.add_css_class("realm-rail");
-    item.append(&rail);
     let main = gtk4::Box::new(Orientation::Vertical, 6);
     main.set_margin_top(10);
     main.set_margin_bottom(10);
@@ -739,8 +730,7 @@ fn candidate_row(candidate: &Candidate, css_class: Option<&str>) -> gtk4::ListBo
         main.append(&confirm);
     }
 
-    item.append(&main);
-    row.set_child(Some(&item));
+    row.set_child(Some(&main));
     row
 }
 
@@ -933,7 +923,7 @@ fn apply_realm_colors_css(
             }
         };
         if is_safe_css_color(color) {
-            css += &format!(".{class} .realm-rail {{ background: {color}; }}\n");
+            css += &format!(".{class} {{ border-left-color: {color}; }}\n");
         }
     }
     if !css.is_empty() {
@@ -1000,8 +990,7 @@ mod theme_tests {
         assert!(css.contains("background-color: #1e1e2e;"));
         assert!(css.contains("border: 2px solid #89b4fa;"));
         assert!(css.contains("background: alpha(#3584e4, 0.14);"));
-        assert!(css.contains(".realm-rail"));
-        assert!(css.contains("border-radius: 0;"));
+        assert!(css.contains("border-left-width: 5px;"));
         assert!(css.contains(".realm-label"));
     }
 
