@@ -109,7 +109,7 @@ impl ThemePalette {
         .clipboard-item:selected {{ background: {selected_background}; }}
         .realm-rail {{
             background: {accent};
-            border-radius: 999px 0 0 999px;
+            border-radius: 0;
             min-width: 5px;
         }}
         .clipboard-preview {{ opacity: 0.94; }}
@@ -1008,7 +1008,7 @@ mod theme_tests {
         assert!(css.contains("border: 2px solid #89b4fa;"));
         assert!(css.contains("background: alpha(#3584e4, 0.14);"));
         assert!(css.contains(".realm-rail"));
-        assert!(css.contains("border-radius: 999px 0 0 999px;"));
+        assert!(css.contains("border-radius: 0;"));
         assert!(css.contains(".realm-label"));
     }
 
