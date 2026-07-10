@@ -99,14 +99,14 @@ impl ThemePalette {
         headerbar {{ background: transparent; box-shadow: none; }}
         .clipboard-list {{ background: transparent; }}
         .clipboard-item {{
-            border: 2px solid transparent;
+            border: 1px solid {border};
             border-radius: 10px;
             padding: 4px;
             margin: 6px 12px;
             transition: border-color 150ms ease, background 150ms ease;
         }}
-        .clipboard-item:hover {{ border-color: {accent}; }}
-        .clipboard-item:selected {{ border-color: {accent}; background: {selected_background}; }}
+        .clipboard-item:hover {{ background: {search_background}; }}
+        .clipboard-item:selected {{ background: {selected_background}; }}
         .realm-rail {{
             background: {accent};
             border-radius: 999px 0 0 999px;
@@ -939,7 +939,7 @@ fn apply_realm_colors_css(
                 color.to_owned()
             };
             css += &format!(
-                ".{class} {{ border-color: {color}; }}\n.{class} .realm-rail {{ background: {color}; }}\n.{class}:selected {{ background: {bg}; }}\n"
+                ".{class} .realm-rail {{ background: {color}; }}\n.{class}:selected {{ background: {bg}; }}\n"
             );
         }
     }
