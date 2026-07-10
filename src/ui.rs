@@ -40,7 +40,7 @@ impl Default for ThemePalette {
         Self {
             background: "#1e1e2e".to_owned(),
             foreground: "#f8f8f2".to_owned(),
-            border: "#89b4fa".to_owned(),
+            border: "#2a2d35".to_owned(),
             accent: "#3584e4".to_owned(),
             selected_background: "alpha(#3584e4, 0.14)".to_owned(),
             realm_background: "alpha(#3584e4, 0.14)".to_owned(),
@@ -985,10 +985,10 @@ mod theme_tests {
     use super::*;
 
     #[test]
-    fn default_palette_matches_existing_visual_contract() {
+    fn default_palette_uses_neutral_border_and_realm_rail() {
         let css = ThemePalette::default().css();
         assert!(css.contains("background-color: #1e1e2e;"));
-        assert!(css.contains("border: 2px solid #89b4fa;"));
+        assert!(css.contains("border: 2px solid #2a2d35;"));
         assert!(css.contains("background: alpha(#3584e4, 0.14);"));
         assert!(css.contains("border-left-width: 5px;"));
         assert!(css.contains(".realm-label"));
