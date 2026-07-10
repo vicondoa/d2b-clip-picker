@@ -40,7 +40,7 @@ impl Default for ThemePalette {
         Self {
             background: "#1e1e2e".to_owned(),
             foreground: "#f8f8f2".to_owned(),
-            border: "#89b4fa".to_owned(),
+            border: "#2a2d35".to_owned(),
             accent: "#3584e4".to_owned(),
             selected_background: "alpha(#3584e4, 0.14)".to_owned(),
             realm_background: "alpha(#3584e4, 0.14)".to_owned(),
@@ -99,42 +99,30 @@ impl ThemePalette {
         headerbar {{ background: transparent; box-shadow: none; }}
         .clipboard-list {{ background: transparent; }}
         .clipboard-item {{
-            border: 2px solid transparent;
+            border: 1px solid {border};
+            border-left-width: 5px;
             border-radius: 10px;
             padding: 4px;
             margin: 6px 12px;
             transition: border-color 150ms ease, background 150ms ease;
         }}
-        .clipboard-item:hover {{ border-color: {accent}; }}
-        .clipboard-item:selected {{ border-color: {accent}; background: {selected_background}; }}
-        .realm-group-header {{
-            border: 2px solid {accent};
-            border-radius: 10px;
-            padding: 4px 8px;
-            margin: 14px 12px 2px 12px;
-        }}
+        .clipboard-item:hover {{ background: {search_background}; }}
+        .clipboard-item:selected {{ background: {selected_background}; }}
         .clipboard-preview {{ opacity: 0.94; }}
         .realm-pill, .search-pill, .warning-pill {{
             border-radius: 999px;
             padding: 4px 8px;
         }}
         .realm-pill {{ background: {realm_background}; }}
+        .realm-label {{ color: {foreground}; }}
         .search-pill {{ background: {search_background}; }}
         .warning-pill {{ background: {warning_background}; }}
-        .realm-group-header {{
-            background: {realm_header_background};
-            border-radius: 999px;
-            padding: 3px 10px;
-            margin: 16px 108px 2px 12px;
-        }}
         ",
             background = self.background,
             foreground = self.foreground,
             border = self.border,
-            accent = self.accent,
             selected_background = self.selected_background,
             realm_background = self.realm_background,
-            realm_header_background = self.realm_header_background,
             search_background = self.search_background,
             warning_background = self.warning_background,
         )
@@ -634,21 +622,12 @@ fn rebuild_grouped_rows(
         groups.get_mut(&realm).unwrap().push(candidate);
     }
 
-    let multi_realm = realm_order.len() > 1;
     let mut all_visible: Vec<Candidate> = Vec::new();
 
     for realm in &realm_order {
-        if multi_realm {
-            let first = groups[realm][0];
-            let css_class = realm_css_classes.get(realm).map(String::as_str);
-            list_box.append(&realm_header_row(
-                realm,
-                &first.source_realm_kind,
-                css_class,
-            ));
-        }
+        let css_class = realm_css_classes.get(realm).map(String::as_str);
         for candidate in &groups[realm] {
-            let row = candidate_row(candidate);
+            let row = candidate_row(candidate, css_class);
             row.set_widget_name(&candidate.entry_id);
             list_box.append(&row);
             all_visible.push((*candidate).clone());
@@ -684,20 +663,25 @@ fn candidate_matches(candidate: &Candidate, query: &str) -> bool {
     haystack.contains(query)
 }
 
-fn candidate_row(candidate: &Candidate) -> gtk4::ListBoxRow {
+fn candidate_row(candidate: &Candidate, css_class: Option<&str>) -> gtk4::ListBoxRow {
     let row = gtk4::ListBoxRow::new();
     row.add_css_class("clipboard-item");
+    if let Some(class) = css_class {
+        row.add_css_class(class);
+    }
     let main = gtk4::Box::new(Orientation::Vertical, 6);
     main.set_margin_top(10);
     main.set_margin_bottom(10);
     main.set_margin_start(12);
     main.set_margin_end(12);
+    main.set_hexpand(true);
 
     let header = gtk4::Box::new(Orientation::Horizontal, 8);
     let (kind, icon) = display_content_kind(&candidate.content_type);
     let icon_label = gtk4::Label::new(Some(icon));
     let realm = gtk4::Label::new(Some(&source_label(candidate)));
-    realm.add_css_class("realm-pill");
+    realm.add_css_class("caption");
+    realm.add_css_class("realm-label");
     let kind_label = gtk4::Label::new(Some(kind));
     kind_label.add_css_class("caption");
     kind_label.set_halign(Align::Start);
@@ -924,15 +908,7 @@ fn apply_realm_colors_css(
     realm_css_classes: &HashMap<String, String>,
 ) {
     let mut css = String::new();
-    if let Some(color) = realm_display
-        .get(destination_realm)
-        .and_then(|meta| meta.color.as_deref())
-        .filter(|color| is_safe_css_color(color))
-    {
-        css += &format!(
-            "window.d2b-clip-picker, .d2b-clip-picker-root {{ border-color: {color}; }}\n"
-        );
-    }
+    let _ = destination_realm;
     for (realm, class) in realm_css_classes {
         let configured = realm_display
             .get(realm)
@@ -947,12 +923,7 @@ fn apply_realm_colors_css(
             }
         };
         if is_safe_css_color(color) {
-            let bg = if is_hex_color(color) {
-                format!("alpha({color}, 0.14)")
-            } else {
-                color.to_owned()
-            };
-            css += &format!(".{class} {{ background: {bg}; border-color: {color}; }}\n");
+            css += &format!(".{class} {{ border-left-color: {color}; }}\n");
         }
     }
     if !css.is_empty() {
@@ -976,29 +947,6 @@ fn fallback_realm_color(realm: &str) -> String {
         hash = hash.wrapping_mul(31).wrapping_add(byte as u64);
     }
     PALETTE[(hash as usize) % PALETTE.len()].to_owned()
-}
-
-/// Build a non-selectable realm group header row. `css_class` is the
-/// per-realm CSS class from `build_realm_css_classes`; pass `None` when no
-/// per-realm color is available.
-fn realm_header_row(realm: &str, _kind: &RealmKind, css_class: Option<&str>) -> gtk4::ListBoxRow {
-    let row = gtk4::ListBoxRow::new();
-    row.set_selectable(false);
-    row.set_activatable(false);
-
-    let header_box = gtk4::Box::new(Orientation::Horizontal, 4);
-    header_box.add_css_class("realm-group-header");
-    if let Some(class) = css_class {
-        header_box.add_css_class(class);
-    }
-
-    let name = sanitize_preview(realm, 48);
-    let label = gtk4::Label::new(Some(&name));
-    label.add_css_class("caption");
-    label.set_halign(Align::Start);
-    header_box.append(&label);
-    row.set_child(Some(&header_box));
-    row
 }
 
 fn is_safe_css_color(value: &str) -> bool {
@@ -1037,15 +985,13 @@ mod theme_tests {
     use super::*;
 
     #[test]
-    fn default_palette_matches_existing_visual_contract() {
+    fn default_palette_uses_neutral_border_and_realm_rail() {
         let css = ThemePalette::default().css();
         assert!(css.contains("background-color: #1e1e2e;"));
-        assert!(css.contains("border: 2px solid #89b4fa;"));
+        assert!(css.contains("border: 2px solid #2a2d35;"));
         assert!(css.contains("background: alpha(#3584e4, 0.14);"));
-        assert!(css.contains(".realm-group-header"));
-        assert!(css.contains("border-radius: 10px;"));
-        assert!(css.contains("border-radius: 999px;"));
-        assert!(css.contains("margin: 16px 108px 2px 12px;"));
+        assert!(css.contains("border-left-width: 5px;"));
+        assert!(css.contains(".realm-label"));
     }
 
     #[test]
