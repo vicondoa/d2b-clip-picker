@@ -118,6 +118,7 @@ impl ThemePalette {
             padding: 4px 8px;
         }}
         .realm-pill {{ background: {realm_background}; }}
+        .realm-label {{ color: {foreground}; }}
         .search-pill {{ background: {search_background}; }}
         .warning-pill {{ background: {warning_background}; }}
         ",
@@ -688,7 +689,8 @@ fn candidate_row(candidate: &Candidate, css_class: Option<&str>) -> gtk4::ListBo
     let (kind, icon) = display_content_kind(&candidate.content_type);
     let icon_label = gtk4::Label::new(Some(icon));
     let realm = gtk4::Label::new(Some(&source_label(candidate)));
-    realm.add_css_class("realm-pill");
+    realm.add_css_class("caption");
+    realm.add_css_class("realm-label");
     let kind_label = gtk4::Label::new(Some(kind));
     kind_label.add_css_class("caption");
     kind_label.set_halign(Align::Start);
@@ -937,7 +939,7 @@ fn apply_realm_colors_css(
                 color.to_owned()
             };
             css += &format!(
-                ".{class} .realm-rail {{ background: {color}; }}\n.{class}:selected {{ background: {bg}; }}\n"
+                ".{class} {{ border-color: {color}; }}\n.{class} .realm-rail {{ background: {color}; }}\n.{class}:selected {{ background: {bg}; }}\n"
             );
         }
     }
@@ -1007,6 +1009,7 @@ mod theme_tests {
         assert!(css.contains("background: alpha(#3584e4, 0.14);"));
         assert!(css.contains(".realm-rail"));
         assert!(css.contains("border-radius: 999px 0 0 999px;"));
+        assert!(css.contains(".realm-label"));
     }
 
     #[test]
