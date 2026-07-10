@@ -916,15 +916,7 @@ fn apply_realm_colors_css(
     realm_css_classes: &HashMap<String, String>,
 ) {
     let mut css = String::new();
-    if let Some(color) = realm_display
-        .get(destination_realm)
-        .and_then(|meta| meta.color.as_deref())
-        .filter(|color| is_safe_css_color(color))
-    {
-        css += &format!(
-            "window.d2b-clip-picker, .d2b-clip-picker-root {{ border-color: {color}; }}\n"
-        );
-    }
+    let _ = destination_realm;
     for (realm, class) in realm_css_classes {
         let configured = realm_display
             .get(realm)
@@ -945,7 +937,7 @@ fn apply_realm_colors_css(
                 color.to_owned()
             };
             css += &format!(
-                ".{class} {{ border-color: {color}; }}\n.{class} .realm-rail {{ background: {color}; }}\n.{class}:selected {{ background: {bg}; }}\n"
+                ".{class} .realm-rail {{ background: {color}; }}\n.{class}:selected {{ background: {bg}; }}\n"
             );
         }
     }
