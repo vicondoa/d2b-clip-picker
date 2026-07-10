@@ -933,14 +933,7 @@ fn apply_realm_colors_css(
             }
         };
         if is_safe_css_color(color) {
-            let bg = if is_hex_color(color) {
-                format!("alpha({color}, 0.14)")
-            } else {
-                color.to_owned()
-            };
-            css += &format!(
-                ".{class} .realm-rail {{ background: {color}; }}\n.{class}:selected {{ background: {bg}; }}\n"
-            );
+            css += &format!(".{class} .realm-rail {{ background: {color}; }}\n");
         }
     }
     if !css.is_empty() {
