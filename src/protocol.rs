@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fmt;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub const PROTOCOL_MIN: u16 = 1;
 pub const PROTOCOL_MAX: u16 = 2;
@@ -23,6 +24,7 @@ const MAX_COLOR_HINT_BYTES: usize = 128;
 const MAX_PLACEMENT_COORDINATE: f64 = 1_000_000.0;
 const MAX_PLACEMENT_DIMENSION: i32 = 1_000_000;
 const REDACTED: &str = "<redacted>";
+const IPC_HANDSHAKE_TIMEOUT: Duration = Duration::from_secs(5);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -669,7 +671,16 @@ pub struct IpcPeer {
 
 impl IpcPeer {
     pub fn new(stream: UnixStream) -> Result<Self, Box<dyn std::error::Error>> {
+        Self::new_with_timeout(stream, IPC_HANDSHAKE_TIMEOUT)
+    }
+
+    fn new_with_timeout(
+        stream: UnixStream,
+        timeout: Duration,
+    ) -> Result<Self, Box<dyn std::error::Error>> {
         stream.set_nonblocking(false)?;
+        stream.set_read_timeout(Some(timeout))?;
+        stream.set_write_timeout(Some(timeout))?;
         let writer_stream = stream.try_clone()?;
         Ok(Self {
             reader: BufReader::new(stream),
@@ -693,7 +704,21 @@ impl IpcPeer {
     }
 
     pub fn read_clipd_frame(&mut self) -> Result<ClipdFrame, Box<dyn std::error::Error>> {
-        let line = read_bounded_line(&mut self.reader, MAX_OPEN_REQUEST_BYTES)?;
+        let line =
+            read_bounded_line(&mut self.reader, MAX_OPEN_REQUEST_BYTES).map_err(|error| {
+                if error.downcast_ref::<io::Error>().is_some_and(|error| {
+                    matches!(
+                        error.kind(),
+                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                    )
+                }) {
+                    Box::new(ProtocolViolation::new(
+                        "timed out waiting for d2b-clipd picker protocol frame".to_owned(),
+                    )) as Box<dyn std::error::Error>
+                } else {
+                    error
+                }
+            })?;
         let frame: ClipdFrame = serde_json::from_str(line.trim_end()).map_err(|_| {
             ProtocolViolation::new(
                 "d2b-clipd sent a malformed or unsupported picker protocol frame".to_owned(),
@@ -711,8 +736,9 @@ impl IpcPeer {
         }
     }
 
-    pub fn into_reader(self) -> BufReader<UnixStream> {
-        self.reader
+    pub fn into_reader(mut self) -> io::Result<BufReader<UnixStream>> {
+        self.reader.get_mut().set_read_timeout(None)?;
+        Ok(self.reader)
     }
 }
 
@@ -779,6 +805,25 @@ mod tests {
         let mut cursor = std::io::Cursor::new(input);
         let err = read_bounded_line(&mut cursor, MAX_OPEN_REQUEST_BYTES).unwrap_err();
         assert!(err.to_string().contains("size cap"));
+    }
+
+    #[test]
+    fn ipc_peer_times_out_on_a_partial_handshake_frame() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        server.write_all(b"{").unwrap();
+        let mut peer = IpcPeer::new_with_timeout(client, Duration::from_millis(20)).unwrap();
+        let started = std::time::Instant::now();
+        let error = peer.read_clipd_frame().unwrap_err();
+        assert!(error.to_string().contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn ipc_peer_clears_read_timeout_for_interactive_lifetime() {
+        let (client, _server) = UnixStream::pair().unwrap();
+        let peer = IpcPeer::new_with_timeout(client, Duration::from_millis(20)).unwrap();
+        let reader = peer.into_reader().unwrap();
+        assert_eq!(reader.get_ref().read_timeout().unwrap(), None);
     }
 
     #[test]

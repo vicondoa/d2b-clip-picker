@@ -212,7 +212,7 @@ pub fn run_picker(
     adw::init()?;
     let tx = peer.tx_for_request(&request);
     let (socket_closed_tx, socket_closed_rx) = mpsc::channel();
-    let mut reader = peer.into_reader();
+    let mut reader = peer.into_reader()?;
     std::thread::spawn(
         move || match read_bounded_line(&mut reader, MAX_OPEN_REQUEST_BYTES) {
             Err(_) => {
