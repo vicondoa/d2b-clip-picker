@@ -18,7 +18,8 @@ Sirulex, at upstream commit `7e12054e55b7b2c34eff8638b88488403686e8dd`.
 The fork keeps the useful compact overlay interaction model and adapts it for
 d2b's split architecture: all trusted clipboard state stays in
 [`d2b`](https://github.com/vicondoa/d2b), while this repository remains a UI-only
-client.
+client. See the full
+[fork acknowledgement](docs/explanation/fork-acknowledgement.md).
 
 ## Trust boundary
 
@@ -40,12 +41,18 @@ The picker must never:
 - connect to `$NIRI_SOCKET` or other compositor IPC for labels or authority;
 - persist clipboard history or payloads;
 - evaluate d2b policy or make transfer decisions;
+- execute commands or connect to `d2bd`;
 - depend on d2b internal Rust crates.
+
+The picker never infers realm, provider, or isolation identity from an app id.
+Those labels are optional presentation metadata supplied by `d2b-clipd`.
+Selection fulfillment remains exclusively in `d2b-clipd` after the picker sends
+`Select`.
 
 ## Protocol
 
-The picker speaks a small, versioned newline-delimited JSON protocol over the
-inherited socketpair.
+The picker speaks an independent, versioned newline-delimited JSON protocol over
+the inherited socketpair. Package 0.2.0 advertises protocol versions 1 through 2.
 
 1. Picker sends `client_hello` with only `protocol_version_range` and
    `picker_version`.
@@ -58,6 +65,18 @@ inherited socketpair.
 
 Selecting an item never writes to the clipboard. It only tells `d2b-clipd` which
 entry the user chose.
+
+Protocol v2 adds optional closed provider and isolation-posture labels to source
+and destination metadata. The UI renders `local-vm`, `qemu-media`,
+`provider-managed`, and `unsafe-local` provider identity, and displays
+`unsafe-local · no isolation` whenever either supplied label has unsafe-local
+posture. Omitted v2 fields and all v1 frames use the legacy `unknown` default.
+Unknown field names or future closed-enum values are rejected visibly rather
+than interpreted as policy.
+
+See [the protocol reference](docs/reference/protocol.md) for frame shapes,
+compatibility,
+bounds, and the complete presentation-only contract.
 
 ## Install
 
@@ -103,18 +122,16 @@ Fields accept normalized lowercase `#rrggbb` colors or GTK
 palette controls only picker shell presentation; it never grants clipboard
 authority or access to payload bytes.
 
-`realm_header_background` is the fallback background for realm group header
-rows when `d2b-clipd` does not supply a per-realm color in `realm_display`.
+`realm_header_background` remains the fallback realm presentation color when
+`d2b-clipd` does not supply a per-realm color in `realm_display`.
 
 ## Realm grouping
 
-When a paste request includes candidates from more than one realm, the picker
-groups them with a non-selectable realm header row before each group. Header
-colors come from the optional `realm_display` map in the `OpenRequest` frame
-supplied by `d2b-clipd`. These colors are purely presentational; they do not
-influence which transfers are permitted. When `realm_display` is absent (older
-`d2b-clipd` versions), the theme's `realm_header_background` is used for all
-group headers.
+Each clipboard row keeps its source realm visible with a label and colored rail.
+Colors come from the optional `realm_display` map in the `OpenRequest` frame
+supplied by `d2b-clipd`. These colors are purely presentational and do not
+influence which transfers are permitted. A deterministic safe palette is used
+when `realm_display` is absent.
 
 ## Flake outputs
 
@@ -133,10 +150,14 @@ nix develop --command cargo fmt --all -- --check
 nix develop --command cargo clippy --all-targets -- -D warnings
 nix develop --command cargo test
 nix flake check --no-build --all-systems
+nix build .#d2b-clip-picker
+nix build .#source
 ```
 
 The tests use fake `d2b-clipd` socketpairs and policy scans to verify that the
 picker remains UI-only.
+
+Security assumptions and reporting guidance are in [SECURITY.md](SECURITY.md).
 
 Run the binary only under a supervising fake or real `d2b-clipd` process that
 provides `--ipc-fd`.

@@ -27,6 +27,7 @@
           manifest = builtins.fromTOML (builtins.readFile ./Cargo.toml);
           version = manifest.package.version;
           cleanSrc = craneLib.cleanCargoSource ./.;
+          releaseSrc = pkgs.lib.cleanSource ./.;
           commonArgs = {
             pname = "d2b-clip-picker";
             inherit version;
@@ -59,7 +60,7 @@
               --transform 'flags=r;s,^\.$,d2b-clip-picker-${version},' \
               --transform 'flags=r;s,^\./,d2b-clip-picker-${version}/,' \
               -czf "$out/d2b-clip-picker-${version}-source.tar.gz" \
-              -C ${cleanSrc} .
+              -C ${releaseSrc} .
           '';
         in
         {

@@ -2,67 +2,64 @@
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-11
+
 ### Added
 
-- Clipboard sources and destinations are now grouped by realm in the picker
-  list. When candidates span more than one realm, a non-selectable realm group
-  header row appears before each group. Group headers use per-realm color hints
-  supplied by `d2b-clipd` in the new optional `realm_display` field of
-  `OpenRequest`; the field defaults to an empty map for backward compatibility
-  with older `d2b-clipd` versions.
-- Added `realm_display: HashMap<String, RealmDisplayMetadata>` to `OpenRequest`
-  (optional, `#[serde(default)]`). `RealmDisplayMetadata` carries an optional
-  `color` hint (`#rrggbb` or `alpha(...)`) for the group header background.
-  Colors are validated against the same safe-CSS allowlist as the theme palette
-  and are used only for presentation; they carry no authorization weight.
-- Added `realm_header_background` to `ThemePalette` (default
-  `alpha(#89b4fa, 0.10)`) as the fallback group header background when no
-  per-realm color is provided by `d2b-clipd`.
-- Realm headers now derive a deterministic palette color when `d2b-clipd` does
-  not provide display metadata, keeping screenshot/test fixtures visually
-  realm-specific.
-- Realm headers now render pure realm names without a `VM` suffix and use more
-  top spacing so adjacent realm groups are visually distinct.
-- The picker shell border now follows the destination realm color when
-  `realm_display` includes one, and realm headers use a compact pill shape.
-- Clipboard source rows now carry their source realm as a rounded item border
-  plus left color rail instead of rendering separate realm header rows.
-- Keyboard navigation remains on selectable clipboard rows because realm
-  identity is now part of each row rather than a separate header row.
-
-  GTK palette for picker shell colors without giving the picker clipboard or
-  compositor authority.
-- The picker now uses Layer Shell top-layer overlay presentation with output
-  placement hints from `d2b-clipd`, activates rows on single click, and keeps
-  Select/Cancel as its only runtime protocol actions.
-- Added repository controls matching the d2b desktop tooling model: AGENTS.md,
-  a pinned Rust toolchain, pull-request and main-branch CI workflows, and flake
-  outputs for the binary package and deterministic source tarball.
+- Added clipd-to-picker protocol v2 with optional, closed provider and isolation
+  posture metadata for destinations and candidates. The picker renders
+  `local-vm`, `qemu-media`, `provider-managed`, and `unsafe-local` identity and
+  shows `unsafe-local · no isolation` without using these fields for policy.
+- Added a protocol-v1 compatibility window: the picker advertises versions 1
+  through 2, and omitted v2 presentation fields default to legacy `unknown`.
+- Added explicit endpoint realm provenance, provider/posture labels, and
+  unsafe-local warnings to the destination and source-row UI.
+- Added source-policy gates covering d2bd/toolkit coupling, command execution,
+  compositor-specific IPC, data-control protocols, clipboard payload file
+  descriptors, persistence, policy decisions, and app-id identity inference.
+- Added a configurable GTK palette, destination-realm framing, source-realm
+  color rails, deterministic fallback realm colors, and safe per-realm color
+  hints supplied by `d2b-clipd`.
+- Added repository controls, a pinned Rust toolchain, CI workflows, a binary
+  package, an app output, a development shell, and a deterministic source
+  tarball.
 
 ### Changed
 
-- Host clipboard rows now show the host realm label without the noisy
-  `(best effort)` suffix while rendering focused-window attribution as a
-  `Focused-window guess` detail.
-- Clipboard realm group headers now carry source-realm colored borders while
-  clipboard rows keep neutral inner styling, matching the other d2b desktop
-  companions.
-- Normal placement and test-select diagnostics now log at info level instead of
-  warning level.
-- The README now describes the d2b-specific trust boundary, install path, flake
-  outputs, protocol shape, and Cursor Clip acknowledgement.
-- The source flake output now produces a tarball with a standard top-level
-  `d2b-clip-picker-<version>/` directory.
-- Main-branch CI no longer cancels in-progress runs, preserving release and
-  artifact signals for every merge while PR validation remains in `pr.yml`.
+- Bumped the crate and flake-derived package version to 0.2.0.
+- The picker now uses a Layer Shell top-layer overlay with output placement
+  hints from `d2b-clipd`, activates rows on single click, and retains
+  `Select`/`Cancel` as its only terminal actions.
+- Clipboard rows carry source-realm identity directly rather than adding
+  non-selectable realm header rows, so keyboard navigation remains on
+  selectable entries.
+- Host rows show focused-window attribution as a detail without a noisy
+  best-effort suffix.
+- Documentation now defines the independent protocol, strict trust boundary,
+  security reporting process, and Cursor Clip fork acknowledgement.
+- The deterministic source tarball now includes the repository documentation,
+  security policy, changelog, and license in addition to Cargo build inputs.
 
 ### Fixed
 
-- Pointer-capture polling now processes readable Wayland events before hangup
-  handling so final pointer/output events are not dropped during disconnect.
-- Pointer-capture shared memory now uses safe `rustix` memfd APIs, and picker
-  protocol frame reads use buffered bounded line reads instead of byte-at-a-time
-  polling.
-- The inherited picker IPC fd is now rejected when it overlaps standard streams
-  and is marked close-on-exec immediately after adoption, preventing leaks into
-  GTK/GLib child processes.
+- Pointer-capture polling processes readable Wayland events before hangup so
+  final pointer/output events are not dropped during disconnect.
+- Pointer-capture shared memory uses safe `rustix` memfd APIs, and protocol
+  frames use buffered bounded line reads.
+- The inherited picker IPC descriptor is rejected when it overlaps standard
+  streams and is marked close-on-exec immediately after adoption.
+- Initial clipd/picker protocol reads and writes now fail closed on a bounded
+  absolute handshake deadline instead of waiting forever on a partial or
+  slow-trickle frame; both socket timeouts are removed before the interactive
+  picker lifetime begins.
+
+### Security
+
+- Protocol boundaries now reject incompatible selected versions, oversized
+  metadata, unknown fields, and unknown closed-enum values visibly.
+- Protocol `Debug` output redacts dynamic request, endpoint, application,
+  preview, thumbnail, and selection identifiers; parse errors do not echo
+  untrusted frame values.
+- Provider, posture, realm, color, and application metadata remain
+  presentation-only and cannot grant selection, alter operations, infer
+  identity, or bypass `Select`/`Cancel`.
