@@ -738,6 +738,7 @@ impl IpcPeer {
 
     pub fn into_reader(mut self) -> io::Result<BufReader<UnixStream>> {
         self.reader.get_mut().set_read_timeout(None)?;
+        self.reader.get_mut().set_write_timeout(None)?;
         Ok(self.reader)
     }
 }
@@ -824,6 +825,7 @@ mod tests {
         let peer = IpcPeer::new_with_timeout(client, Duration::from_millis(20)).unwrap();
         let reader = peer.into_reader().unwrap();
         assert_eq!(reader.get_ref().read_timeout().unwrap(), None);
+        assert_eq!(reader.get_ref().write_timeout().unwrap(), None);
     }
 
     #[test]

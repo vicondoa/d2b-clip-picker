@@ -49,7 +49,8 @@
 - The inherited picker IPC descriptor is rejected when it overlaps standard
   streams and is marked close-on-exec immediately after adoption.
 - Initial clipd/picker protocol reads and writes now fail closed on a bounded
-  handshake timeout instead of waiting forever on a partial frame.
+  handshake timeout instead of waiting forever on a partial frame; both socket
+  timeouts are removed before the interactive picker lifetime begins.
 
 ### Security
 
