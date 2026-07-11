@@ -24,34 +24,13 @@ fn collect_rs(dir: &Path, files: &mut Vec<PathBuf>) {
     }
 }
 
-#[test]
-fn no_forbidden_clipboard_authority_dependencies_or_uses() {
-    let forbidden = [
-        concat!("data", "_control"),
-        concat!("ext_", "data", "_control"),
-        concat!("zwlr_", "data", "_control"),
-        concat!("virtual", "_keyboard"),
-        "ydotool",
-        concat!("wl", "-copy"),
-        concat!("wl", "-paste"),
-        "keyring",
-        "stoolap",
-        "aes-gcm",
-        "SetClipboard",
-        "ClearHistory",
-        "DeleteItem",
-        "SetPinned",
-        "Persistence",
-        "recvmsg",
-        "sendmsg",
-        "SCM_RIGHTS",
-    ];
+fn assert_source_excludes(boundary: &str, forbidden: &[&str]) {
     for path in source_files() {
         let content = fs::read_to_string(&path).expect("read file");
         for needle in forbidden {
             assert!(
                 !content.contains(needle),
-                "{} contains forbidden picker authority marker {needle}",
+                "{} violates the {boundary} boundary with marker {needle}",
                 path.display()
             );
         }
@@ -59,14 +38,150 @@ fn no_forbidden_clipboard_authority_dependencies_or_uses() {
 }
 
 #[test]
-fn picker_does_not_depend_on_compositor_ipc_environment() {
-    let env_name = concat!("NIRI", "_SOCKET");
-    for path in source_files() {
-        let content = fs::read_to_string(&path).expect("read file");
+fn no_clipboard_or_input_authority() {
+    assert_source_excludes(
+        "clipboard authority",
+        &[
+            concat!("data", "_control"),
+            concat!("ext_", "data", "_control"),
+            concat!("zwlr_", "data", "_control"),
+            concat!("ext-", "data", "-control"),
+            concat!("zwlr-", "data", "-control"),
+            "primary_selection",
+            "primary-selection",
+            concat!("virtual", "_keyboard"),
+            "ydotool",
+            concat!("wl", "-copy"),
+            concat!("wl", "-paste"),
+            "SetClipboard",
+            "ClearClipboard",
+        ],
+    );
+}
+
+#[test]
+fn no_clipboard_payload_fd_transport() {
+    assert_source_excludes(
+        "payload fd",
+        &[
+            "recvmsg",
+            "sendmsg",
+            "SCM_RIGHTS",
+            "SocketAncillary",
+            "ControlMessage",
+            "AncillaryData",
+        ],
+    );
+}
+
+#[test]
+fn no_d2b_daemon_or_toolkit_client_coupling() {
+    assert_source_excludes(
+        "independent protocol",
+        &[
+            "d2b-client",
+            "d2b_client",
+            "d2b-toolkit",
+            "d2b_toolkit",
+            "d2b-core",
+            "d2b_core",
+            "d2b-contracts",
+            "d2b_contracts",
+            "d2bd-client",
+            "d2bd_client",
+            "/run/d2b/public.sock",
+            "d2bd",
+        ],
+    );
+}
+
+#[test]
+fn no_command_execution_surface() {
+    assert_source_excludes(
+        "command execution",
+        &[
+            "std::process::Command",
+            "tokio::process",
+            "Command::new(",
+            "execve(",
+            "execvp(",
+            "posix_spawn",
+            "libc::fork",
+            "libc::system",
+        ],
+    );
+}
+
+#[test]
+fn no_compositor_specific_ipc() {
+    assert_source_excludes(
+        "compositor IPC",
+        &[
+            concat!("NIRI", "_SOCKET"),
+            "niri-ipc",
+            "niri_ipc",
+            "swaymsg",
+            "hyprctl",
+        ],
+    );
+}
+
+#[test]
+fn no_persistence_or_history_store() {
+    assert_source_excludes(
+        "persistence",
+        &[
+            "rusqlite",
+            "libsqlite",
+            "sqlite",
+            "stoolap",
+            "redb",
+            "sled",
+            "keyring",
+            "aes-gcm",
+            "std::fs::write",
+            "fs::write(",
+            "File::create(",
+            "OpenOptions",
+            "create_dir",
+            "ClipboardHistory",
+            "clipboard_history",
+            "HistoryStore",
+        ],
+    );
+}
+
+#[test]
+fn no_policy_engine_or_app_id_identity_inference() {
+    assert_source_excludes(
+        "policy and identity",
+        &[
+            "PolicyDecision",
+            "evaluate_policy",
+            "authorize_transfer",
+            "is_transfer_allowed",
+            "app_id.starts_with",
+            "app_id.strip_prefix",
+            "app_id.split",
+            ".starts_with(\"d2b.",
+            ".strip_prefix(\"d2b.",
+        ],
+    );
+}
+
+#[test]
+fn outbound_protocol_has_no_transfer_fulfillment_action() {
+    for forbidden_type in [
+        "set_clipboard",
+        "write_payload",
+        "receive_payload_fd",
+        "publish_selection",
+        "execute",
+    ] {
+        let frame = format!(r#"{{"type":"{forbidden_type}"}}"#);
         assert!(
-            !content.contains(env_name),
-            "{} must not depend on compositor IPC env vars",
-            path.display()
+            serde_json::from_str::<d2b_clip_picker::protocol::PickerFrame>(&frame).is_err(),
+            "forbidden outbound action {forbidden_type} must not decode"
         );
     }
 }

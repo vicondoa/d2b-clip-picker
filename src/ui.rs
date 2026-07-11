@@ -1,8 +1,8 @@
 use crate::placement::PickerPlacement;
 use crate::protocol::{
     AttributionQuality, Candidate, ClipdFrame, IpcPeer, MAX_OPEN_REQUEST_BYTES, OpenRequest,
-    PickerTx, RealmDisplayMetadata, RealmKind, display_content_kind, read_bounded_line,
-    sanitize_preview,
+    PickerTx, PresentationIsolationPosture, PresentationProviderKind, RealmDisplayMetadata,
+    RealmKind, display_content_kind, read_bounded_line, sanitize_preview,
 };
 use base64::Engine;
 use gtk4::gdk::prelude::MonitorExt;
@@ -18,6 +18,79 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+pub const UNSAFE_LOCAL_WARNING: &str = "unsafe-local · no isolation";
+
+#[derive(Clone, PartialEq, Eq)]
+pub struct EndpointPresentation {
+    pub realm: String,
+    pub provider: Option<&'static str>,
+    pub isolation: Option<&'static str>,
+    pub warning: Option<&'static str>,
+}
+
+impl EndpointPresentation {
+    pub fn has_identity_metadata(&self) -> bool {
+        self.provider.is_some() || self.isolation.is_some()
+    }
+
+    pub fn provenance_label(&self) -> String {
+        let mut parts = vec![format!("Realm {}", self.realm)];
+        if let Some(provider) = self.provider {
+            parts.push(format!("provider {provider}"));
+        }
+        if let Some(isolation) = self.isolation {
+            parts.push(format!("isolation {isolation}"));
+        }
+        parts.join(" · ")
+    }
+
+    pub fn identity_label(&self) -> Option<String> {
+        let mut parts = Vec::new();
+        if let Some(provider) = self.provider {
+            parts.push(format!("provider {provider}"));
+        }
+        if let Some(isolation) = self.isolation {
+            parts.push(format!("isolation {isolation}"));
+        }
+        (!parts.is_empty()).then(|| parts.join(" · "))
+    }
+}
+
+pub fn destination_presentation(
+    destination: &crate::protocol::DestinationMetadata,
+) -> EndpointPresentation {
+    endpoint_presentation(
+        &destination.realm,
+        destination.provider_kind,
+        destination.isolation_posture,
+    )
+}
+
+pub fn candidate_presentation(candidate: &Candidate) -> EndpointPresentation {
+    endpoint_presentation(
+        &candidate.source_realm,
+        candidate.source_provider_kind,
+        candidate.source_isolation_posture,
+    )
+}
+
+fn endpoint_presentation(
+    realm: &str,
+    provider: PresentationProviderKind,
+    isolation: PresentationIsolationPosture,
+) -> EndpointPresentation {
+    let provider_label = (!provider.is_unknown()).then(|| provider.label());
+    let isolation_label = (!isolation.is_unknown()).then(|| isolation.label());
+    let unsafe_local = provider == PresentationProviderKind::UnsafeLocal
+        || isolation == PresentationIsolationPosture::UnsafeLocal;
+    EndpointPresentation {
+        realm: sanitize_preview(realm, 80),
+        provider: provider_label,
+        isolation: isolation_label,
+        warning: unsafe_local.then_some(UNSAFE_LOCAL_WARNING),
+    }
+}
 
 #[derive(Clone, Debug, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -295,6 +368,27 @@ fn create_window(
     destination.set_margin_top(8);
     destination.set_wrap(true);
     main_box.append(&destination);
+
+    let destination_presentation = destination_presentation(&request.destination);
+    if destination_presentation.has_identity_metadata() {
+        let provenance = gtk4::Label::new(Some(&destination_presentation.provenance_label()));
+        provenance.add_css_class("caption");
+        provenance.add_css_class("endpoint-identity");
+        provenance.set_halign(Align::Start);
+        provenance.set_margin_start(16);
+        provenance.set_margin_end(16);
+        provenance.set_wrap(true);
+        main_box.append(&provenance);
+    }
+    if let Some(warning) = destination_presentation.warning {
+        let posture_warning = gtk4::Label::new(Some(warning));
+        posture_warning.add_css_class("warning-pill");
+        posture_warning.set_halign(Align::Start);
+        posture_warning.set_margin_start(16);
+        posture_warning.set_margin_end(16);
+        posture_warning.set_margin_top(6);
+        main_box.append(&posture_warning);
+    }
 
     let requested = gtk4::Label::new(Some(&format!(
         "Requested {} · type to filter",
@@ -695,6 +789,22 @@ fn candidate_row(candidate: &Candidate, css_class: Option<&str>) -> gtk4::ListBo
     header.append(&time);
     main.append(&header);
 
+    let presentation = candidate_presentation(candidate);
+    if let Some(identity) = presentation.identity_label() {
+        let identity_label = gtk4::Label::new(Some(&identity));
+        identity_label.add_css_class("caption");
+        identity_label.add_css_class("endpoint-identity");
+        identity_label.set_halign(Align::Start);
+        identity_label.set_wrap(true);
+        main.append(&identity_label);
+    }
+    if let Some(warning) = presentation.warning {
+        let warning_label = gtk4::Label::new(Some(warning));
+        warning_label.add_css_class("warning-pill");
+        warning_label.set_halign(Align::Start);
+        main.append(&warning_label);
+    }
+
     let app_label = gtk4::Label::new(Some(&app_source_label(candidate)));
     app_label.add_css_class("caption");
     app_label.add_css_class("dim-label");
@@ -1007,6 +1117,8 @@ mod theme_tests {
             entry_id: "entry".to_owned(),
             source_realm: "dev".to_owned(),
             source_realm_kind: RealmKind::Vm,
+            source_provider_kind: PresentationProviderKind::LocalVm,
+            source_isolation_posture: PresentationIsolationPosture::VirtualMachine,
             source_app: None,
             source_app_id: None,
             source_attribution: AttributionQuality::ExactClient,
@@ -1018,6 +1130,83 @@ mod theme_tests {
             confirmation_required: false,
         };
         assert_eq!(source_label(&candidate), "dev");
+    }
+
+    #[test]
+    fn unsafe_local_view_model_shows_provider_posture_realm_and_warning() {
+        let destination = crate::protocol::DestinationMetadata {
+            realm: "host-tools".to_owned(),
+            realm_kind: RealmKind::UnsafeLocal,
+            provider_kind: PresentationProviderKind::UnsafeLocal,
+            isolation_posture: PresentationIsolationPosture::UnsafeLocal,
+            application: Some("Browser".to_owned()),
+            app_id: Some("org.example.Browser".to_owned()),
+            title: None,
+            workspace: None,
+            output: None,
+            attribution: Some(AttributionQuality::ExactClient),
+        };
+
+        let presentation = destination_presentation(&destination);
+        assert_eq!(
+            presentation.provenance_label(),
+            "Realm host-tools · provider unsafe-local · isolation unsafe-local"
+        );
+        assert_eq!(presentation.warning, Some(UNSAFE_LOCAL_WARNING));
+    }
+
+    #[test]
+    fn normal_vm_title_and_realm_label_remain_unchanged() {
+        let destination = crate::protocol::DestinationMetadata {
+            realm: "dev".to_owned(),
+            realm_kind: RealmKind::Vm,
+            provider_kind: PresentationProviderKind::LocalVm,
+            isolation_posture: PresentationIsolationPosture::VirtualMachine,
+            application: Some("Firefox".to_owned()),
+            app_id: Some("d2b.looks-unsafe.firefox".to_owned()),
+            title: None,
+            workspace: None,
+            output: None,
+            attribution: Some(AttributionQuality::ExactClient),
+        };
+        let request = OpenRequest {
+            selected_protocol_version: 2,
+            clipd_version: "test".to_owned(),
+            picker_version: "test".to_owned(),
+            request_id: "request".to_owned(),
+            destination: destination.clone(),
+            requested_mime_type: "text/plain".to_owned(),
+            expires_at_unix_ms: None,
+            placement_hints: None,
+            candidates: Vec::new(),
+            realm_display: HashMap::new(),
+        };
+
+        assert_eq!(destination_label(&request), "Paste into dev · Firefox");
+        let presentation = destination_presentation(&destination);
+        assert_eq!(
+            presentation.provenance_label(),
+            "Realm dev · provider local-vm · isolation virtual-machine"
+        );
+        assert_eq!(presentation.warning, None);
+    }
+
+    #[test]
+    fn app_id_never_infers_unsafe_local_identity() {
+        let destination = crate::protocol::DestinationMetadata {
+            realm: "dev".to_owned(),
+            realm_kind: RealmKind::Vm,
+            provider_kind: PresentationProviderKind::LocalVm,
+            isolation_posture: PresentationIsolationPosture::VirtualMachine,
+            application: None,
+            app_id: Some("unsafe-local.fabricated".to_owned()),
+            title: None,
+            workspace: None,
+            output: None,
+            attribution: Some(AttributionQuality::ExactClient),
+        };
+
+        assert_eq!(destination_presentation(&destination).warning, None);
     }
 
     #[test]

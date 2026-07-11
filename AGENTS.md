@@ -23,6 +23,8 @@ privileged clipboard owner.
 The picker may:
 
 - render destination/source metadata supplied by `d2b-clipd`;
+- render optional closed provider/isolation posture metadata supplied by
+  `d2b-clipd`;
 - filter/search candidates;
 - render safe text previews and allowed host thumbnails;
 - handle keyboard, mouse, Escape, and window-close cancellation;
@@ -36,6 +38,7 @@ The picker MUST NEVER:
 - connect to `$NIRI_SOCKET` or other compositor IPC for authority or labels;
 - persist clipboard history or payloads;
 - evaluate d2b policy or infer VM identity from app-id prefixes;
+- connect to `d2bd` or execute commands;
 - import d2b internal Rust crates.
 
 ## Repo layout
@@ -46,6 +49,7 @@ The picker MUST NEVER:
 ├── AGENTS.md                 <- this file
 ├── CHANGELOG.md              <- Keep a Changelog, entries under [Unreleased]
 ├── LICENSE                   <- GPL-3.0-only
+├── SECURITY.md               <- security boundary + reporting
 ├── flake.nix / flake.lock    <- source tarball, binary package, app, devShell
 ├── Cargo.toml / Cargo.lock   <- Rust package
 ├── rust-toolchain.toml       <- pinned Rust toolchain
@@ -54,6 +58,7 @@ The picker MUST NEVER:
 │   ├── ui.rs                 <- GTK/Libadwaita UI
 │   ├── placement.rs          <- Layer Shell pointer/output placement
 │   └── main.rs               <- IPC entry point + process harness
+├── docs/                     <- protocol reference + fork acknowledgement
 └── tests/                    <- protocol/policy/binary integration tests
 ```
 

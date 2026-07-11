@@ -202,6 +202,9 @@ mod tests {
             destination: d2b_clip_picker::protocol::DestinationMetadata {
                 realm: "personal-dev".to_owned(),
                 realm_kind: d2b_clip_picker::protocol::RealmKind::Vm,
+                provider_kind: d2b_clip_picker::protocol::PresentationProviderKind::LocalVm,
+                isolation_posture:
+                    d2b_clip_picker::protocol::PresentationIsolationPosture::VirtualMachine,
                 application: Some("Firefox".to_owned()),
                 app_id: Some("d2b.personal-dev.firefox".to_owned()),
                 title: None,
