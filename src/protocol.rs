@@ -4,7 +4,7 @@ use std::fmt;
 use std::io::{self, BufRead, BufReader, Read, Write};
 use std::os::unix::net::UnixStream;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub const PROTOCOL_MIN: u16 = 1;
 pub const PROTOCOL_MAX: u16 = 2;
@@ -667,6 +667,7 @@ impl PickerTx {
 pub struct IpcPeer {
     reader: BufReader<UnixStream>,
     writer: Arc<Mutex<UnixStream>>,
+    handshake_deadline: Instant,
 }
 
 impl IpcPeer {
@@ -682,9 +683,16 @@ impl IpcPeer {
         stream.set_read_timeout(Some(timeout))?;
         stream.set_write_timeout(Some(timeout))?;
         let writer_stream = stream.try_clone()?;
+        let handshake_deadline = Instant::now().checked_add(timeout).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "picker handshake timeout exceeds the supported range",
+            )
+        })?;
         Ok(Self {
             reader: BufReader::new(stream),
             writer: Arc::new(Mutex::new(writer_stream)),
+            handshake_deadline,
         })
     }
 
@@ -704,21 +712,25 @@ impl IpcPeer {
     }
 
     pub fn read_clipd_frame(&mut self) -> Result<ClipdFrame, Box<dyn std::error::Error>> {
-        let line =
-            read_bounded_line(&mut self.reader, MAX_OPEN_REQUEST_BYTES).map_err(|error| {
-                if error.downcast_ref::<io::Error>().is_some_and(|error| {
-                    matches!(
-                        error.kind(),
-                        io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
-                    )
-                }) {
-                    Box::new(ProtocolViolation::new(
-                        "timed out waiting for d2b-clipd picker protocol frame".to_owned(),
-                    )) as Box<dyn std::error::Error>
-                } else {
-                    error
-                }
-            })?;
+        let line = read_bounded_line_until(
+            &mut self.reader,
+            MAX_OPEN_REQUEST_BYTES,
+            self.handshake_deadline,
+        )
+        .map_err(|error| {
+            if error.downcast_ref::<io::Error>().is_some_and(|error| {
+                matches!(
+                    error.kind(),
+                    io::ErrorKind::TimedOut | io::ErrorKind::WouldBlock
+                )
+            }) {
+                Box::new(ProtocolViolation::new(
+                    "timed out waiting for d2b-clipd picker protocol frame".to_owned(),
+                )) as Box<dyn std::error::Error>
+            } else {
+                error
+            }
+        })?;
         let frame: ClipdFrame = serde_json::from_str(line.trim_end()).map_err(|_| {
             ProtocolViolation::new(
                 "d2b-clipd sent a malformed or unsupported picker protocol frame".to_owned(),
@@ -754,11 +766,48 @@ pub fn read_bounded_line<R: BufRead>(
     if read == 0 {
         return Err("d2b-clipd closed picker socket".into());
     }
+
     if !buf.ends_with(b"\n") {
         return Err("clipd frame exceeded size cap".into());
     }
     buf.pop();
     Ok(String::from_utf8(buf)?)
+}
+
+fn read_bounded_line_until(
+    reader: &mut BufReader<UnixStream>,
+    max_bytes: usize,
+    deadline: Instant,
+) -> Result<String, Box<dyn std::error::Error>> {
+    let mut buf = Vec::with_capacity(max_bytes.min(8192));
+    loop {
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "picker protocol frame deadline elapsed",
+            )
+            .into());
+        }
+        reader.get_ref().set_read_timeout(Some(remaining))?;
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            return Err("d2b-clipd closed picker socket".into());
+        }
+        let chunk_len = available
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(available.len(), |position| position + 1);
+        if buf.len().saturating_add(chunk_len) > max_bytes {
+            return Err("clipd frame exceeded size cap".into());
+        }
+        let complete = available[chunk_len - 1] == b'\n';
+        buf.extend_from_slice(&available[..chunk_len]);
+        reader.consume(chunk_len);
+        if complete {
+            return Ok(String::from_utf8(buf)?);
+        }
+    }
 }
 
 pub fn sanitize_preview(input: &str, max_chars: usize) -> String {
@@ -817,6 +866,26 @@ mod tests {
         let error = peer.read_clipd_frame().unwrap_err();
         assert!(error.to_string().contains("timed out"), "{error}");
         assert!(started.elapsed() < Duration::from_secs(1));
+    }
+
+    #[test]
+    fn ipc_peer_uses_one_deadline_against_slow_trickle_frames() {
+        let (client, mut server) = UnixStream::pair().unwrap();
+        let producer = std::thread::spawn(move || {
+            for _ in 0..50 {
+                if server.write_all(b"{").is_err() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        });
+        let mut peer = IpcPeer::new_with_timeout(client, Duration::from_millis(30)).unwrap();
+        let started = Instant::now();
+        let error = peer.read_clipd_frame().unwrap_err();
+        assert!(error.to_string().contains("timed out"), "{error}");
+        assert!(started.elapsed() < Duration::from_millis(200));
+        drop(peer);
+        producer.join().unwrap();
     }
 
     #[test]
