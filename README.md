@@ -18,7 +18,8 @@ Sirulex, at upstream commit `7e12054e55b7b2c34eff8638b88488403686e8dd`.
 The fork keeps the useful compact overlay interaction model and adapts it for
 d2b's split architecture: all trusted clipboard state stays in
 [`d2b`](https://github.com/vicondoa/d2b), while this repository remains a UI-only
-client. See the full [fork acknowledgement](docs/fork-acknowledgement.md).
+client. See the full
+[fork acknowledgement](docs/explanation/fork-acknowledgement.md).
 
 ## Trust boundary
 
@@ -73,7 +74,8 @@ posture. Omitted v2 fields and all v1 frames use the legacy `unknown` default.
 Unknown field names or future closed-enum values are rejected visibly rather
 than interpreted as policy.
 
-See [the protocol reference](docs/protocol.md) for frame shapes, compatibility,
+See [the protocol reference](docs/reference/protocol.md) for frame shapes,
+compatibility,
 bounds, and the complete presentation-only contract.
 
 ## Install

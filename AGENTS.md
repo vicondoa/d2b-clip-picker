@@ -58,7 +58,9 @@ The picker MUST NEVER:
 │   ├── ui.rs                 <- GTK/Libadwaita UI
 │   ├── placement.rs          <- Layer Shell pointer/output placement
 │   └── main.rs               <- IPC entry point + process harness
-├── docs/                     <- protocol reference + fork acknowledgement
+├── docs/
+│   ├── reference/            <- clipd/picker protocol contract
+│   └── explanation/          <- fork provenance and project context
 └── tests/                    <- protocol/policy/binary integration tests
 ```
 
@@ -124,6 +126,10 @@ wave/finding/process markers.
 ## References
 
 - [README.md](./README.md) — user-facing overview and install.
+- [docs/reference/protocol.md](./docs/reference/protocol.md) — versioned
+  clipd/picker wire contract.
+- [docs/explanation/fork-acknowledgement.md](./docs/explanation/fork-acknowledgement.md)
+  — upstream attribution and fork scope.
 - [d2b](https://github.com/vicondoa/d2b) — clipboard authority (`d2b-clipd`)
   and Wayland proxy implementation.
 - [Cursor Clip upstream](https://github.com/Sirulex/cursor-clip) — original

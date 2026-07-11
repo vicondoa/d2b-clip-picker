@@ -41,4 +41,5 @@ unknown closed-enum values terminate the request visibly. Missing v2
 presentation fields default to the bounded legacy `unknown` state. Parse errors
 do not echo untrusted frame values.
 
-See [docs/protocol.md](docs/protocol.md) for the complete wire contract.
+See [docs/reference/protocol.md](docs/reference/protocol.md) for the complete
+wire contract.
