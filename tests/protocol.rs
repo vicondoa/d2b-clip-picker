@@ -1,9 +1,9 @@
 use d2b_clip_picker::protocol::{
     AttributionQuality, Candidate, ClipboardCapabilityPreflight,
     ClipboardCapabilityPreflightStatus, ClipboardTransferAuthority, ClipdFrame,
-    DestinationMetadata, IpcPeer, MAX_CANDIDATES, OpenRequest, PROTOCOL_MAX, PROTOCOL_MIN,
-    PickerFrame, PlacementHints, PresentationIsolationPosture, PresentationProviderKind,
-    RealmDisplayMetadata, RealmKind, sanitize_preview,
+    DestinationMetadata, IpcPeer, MAX_CANDIDATES, MAX_CAPABILITY_TOKENS, OpenRequest, PROTOCOL_MAX,
+    PROTOCOL_MIN, PickerFrame, PlacementHints, PresentationIsolationPosture,
+    PresentationProviderKind, RealmDisplayMetadata, RealmKind, sanitize_preview,
 };
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -462,6 +462,37 @@ fn request_validation_enforces_candidate_and_metadata_bounds() {
             .to_string()
             .contains(&oversized_realm.destination.realm)
     );
+}
+
+#[test]
+fn request_validation_enforces_capability_preflight_list_bounds() {
+    for field in [
+        "required_capabilities",
+        "advertised_capabilities",
+        "missing_capabilities",
+    ] {
+        let mut request = sample_request();
+        let preflight = request
+            .destination
+            .capability_preflight
+            .as_mut()
+            .expect("preflight");
+        let oversized = vec!["clipboard".to_owned(); MAX_CAPABILITY_TOKENS + 1];
+        match field {
+            "required_capabilities" => preflight.required_capabilities = oversized,
+            "advertised_capabilities" => preflight.advertised_capabilities = oversized,
+            "missing_capabilities" => preflight.missing_capabilities = oversized,
+            _ => unreachable!(),
+        }
+
+        let error = request.validate().expect_err("capability token cap");
+        assert!(error.to_string().contains(field));
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("count exceeds {MAX_CAPABILITY_TOKENS}"))
+        );
+    }
 }
 
 #[test]
