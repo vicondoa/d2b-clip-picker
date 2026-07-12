@@ -202,6 +202,7 @@ mod tests {
             destination: d2b_clip_picker::protocol::DestinationMetadata {
                 realm: "personal-dev".to_owned(),
                 realm_kind: d2b_clip_picker::protocol::RealmKind::Vm,
+                canonical_target: None,
                 provider_kind: d2b_clip_picker::protocol::PresentationProviderKind::LocalVm,
                 isolation_posture:
                     d2b_clip_picker::protocol::PresentationIsolationPosture::VirtualMachine,
@@ -211,6 +212,7 @@ mod tests {
                 workspace: None,
                 output: Some("DP-3".to_owned()),
                 attribution: Some(d2b_clip_picker::protocol::AttributionQuality::ExactClient),
+                capability_preflight: None,
             },
             requested_mime_type: "text/plain".to_owned(),
             expires_at_unix_ms: Some(1),

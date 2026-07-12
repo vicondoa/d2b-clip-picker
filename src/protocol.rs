@@ -15,6 +15,7 @@ pub const MAX_METADATA_BYTES: usize = 1024;
 pub const MAX_PREVIEW_BYTES: usize = 2048;
 pub const MAX_THUMBNAIL_BASE64_BYTES: usize = 349_528;
 pub const MAX_REALM_DISPLAY_ENTRIES: usize = 64;
+pub const MAX_CAPABILITY_TOKENS: usize = 64;
 
 const MAX_PROTOCOL_VERSION_TEXT_BYTES: usize = 128;
 const MAX_REQUEST_ID_BYTES: usize = 256;
@@ -248,6 +249,9 @@ impl OpenRequest {
 pub struct DestinationMetadata {
     pub realm: String,
     pub realm_kind: RealmKind,
+    /// Presentation-only canonical workload target supplied by `d2b-clipd`.
+    #[serde(default)]
+    pub canonical_target: Option<String>,
     /// Presentation-only provider identity supplied by `d2b-clipd`.
     #[serde(default, skip_serializing_if = "PresentationProviderKind::is_unknown")]
     pub provider_kind: PresentationProviderKind,
@@ -269,6 +273,9 @@ pub struct DestinationMetadata {
     pub output: Option<String>,
     #[serde(default)]
     pub attribution: Option<AttributionQuality>,
+    /// Informational proof that clipd remains the transfer authority.
+    #[serde(default)]
+    pub capability_preflight: Option<ClipboardCapabilityPreflight>,
 }
 
 impl fmt::Debug for DestinationMetadata {
@@ -277,6 +284,10 @@ impl fmt::Debug for DestinationMetadata {
             .debug_struct("DestinationMetadata")
             .field("realm", &REDACTED)
             .field("realm_kind", &self.realm_kind)
+            .field(
+                "canonical_target",
+                &self.canonical_target.as_ref().map(|_| REDACTED),
+            )
             .field("provider_kind", &self.provider_kind)
             .field("isolation_posture", &self.isolation_posture)
             .field("application", &self.application.as_ref().map(|_| REDACTED))
@@ -285,6 +296,7 @@ impl fmt::Debug for DestinationMetadata {
             .field("workspace", &self.workspace.as_ref().map(|_| REDACTED))
             .field("output", &self.output.as_ref().map(|_| REDACTED))
             .field("attribution", &self.attribution)
+            .field("capability_preflight", &self.capability_preflight)
             .finish()
     }
 }
@@ -293,6 +305,10 @@ impl DestinationMetadata {
     fn validate(&self) -> Result<(), ProtocolViolation> {
         validate_text("destination realm", &self.realm, MAX_METADATA_BYTES, true)?;
         for (field, value) in [
+            (
+                "destination canonical_target",
+                self.canonical_target.as_deref(),
+            ),
             ("destination application", self.application.as_deref()),
             ("destination app_id", self.app_id.as_deref()),
             ("destination title", self.title.as_deref()),
@@ -300,6 +316,9 @@ impl DestinationMetadata {
             ("destination output", self.output.as_deref()),
         ] {
             validate_optional_text(field, value, MAX_METADATA_BYTES)?;
+        }
+        if let Some(preflight) = &self.capability_preflight {
+            preflight.validate()?;
         }
         Ok(())
     }
@@ -369,6 +388,63 @@ impl PresentationIsolationPosture {
             Self::Unknown => "unknown",
         }
     }
+}
+
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClipboardCapabilityPreflight {
+    pub status: ClipboardCapabilityPreflightStatus,
+    pub required_capabilities: Vec<String>,
+    pub advertised_capabilities: Vec<String>,
+    pub missing_capabilities: Vec<String>,
+    pub authority: ClipboardTransferAuthority,
+}
+
+impl fmt::Debug for ClipboardCapabilityPreflight {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("ClipboardCapabilityPreflight")
+            .field("status", &self.status)
+            .field("required_count", &self.required_capabilities.len())
+            .field("advertised_count", &self.advertised_capabilities.len())
+            .field("missing_count", &self.missing_capabilities.len())
+            .field("authority", &self.authority)
+            .finish()
+    }
+}
+
+impl ClipboardCapabilityPreflight {
+    fn validate(&self) -> Result<(), ProtocolViolation> {
+        for (field, tokens) in [
+            ("required_capabilities", &self.required_capabilities),
+            ("advertised_capabilities", &self.advertised_capabilities),
+            ("missing_capabilities", &self.missing_capabilities),
+        ] {
+            if tokens.len() > MAX_CAPABILITY_TOKENS {
+                return Err(ProtocolViolation::new(format!(
+                    "{field} count exceeds {MAX_CAPABILITY_TOKENS}"
+                )));
+            }
+            for token in tokens {
+                validate_text(field, token, MAX_METADATA_BYTES, true)?;
+            }
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardCapabilityPreflightStatus {
+    Satisfied,
+    Denied,
+    Unknown,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClipboardTransferAuthority {
+    PickerClipd,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -467,6 +543,9 @@ pub struct Candidate {
     pub entry_id: String,
     pub source_realm: String,
     pub source_realm_kind: RealmKind,
+    /// Presentation-only canonical workload target supplied by `d2b-clipd`.
+    #[serde(default)]
+    pub source_canonical_target: Option<String>,
     /// Presentation-only provider identity supplied by `d2b-clipd`.
     #[serde(default, skip_serializing_if = "PresentationProviderKind::is_unknown")]
     pub source_provider_kind: PresentationProviderKind,
@@ -492,6 +571,9 @@ pub struct Candidate {
     pub byte_count: Option<u64>,
     #[serde(default)]
     pub confirmation_required: bool,
+    /// Informational proof that clipd remains the transfer authority.
+    #[serde(default)]
+    pub capability_preflight: Option<ClipboardCapabilityPreflight>,
 }
 
 impl fmt::Debug for Candidate {
@@ -501,6 +583,10 @@ impl fmt::Debug for Candidate {
             .field("entry_id", &REDACTED)
             .field("source_realm", &REDACTED)
             .field("source_realm_kind", &self.source_realm_kind)
+            .field(
+                "source_canonical_target",
+                &self.source_canonical_target.as_ref().map(|_| REDACTED),
+            )
             .field("source_provider_kind", &self.source_provider_kind)
             .field("source_isolation_posture", &self.source_isolation_posture)
             .field("source_app", &self.source_app.as_ref().map(|_| REDACTED))
@@ -521,6 +607,7 @@ impl fmt::Debug for Candidate {
             )
             .field("byte_count", &self.byte_count)
             .field("confirmation_required", &self.confirmation_required)
+            .field("capability_preflight", &self.capability_preflight)
             .finish()
     }
 }
@@ -540,6 +627,10 @@ impl Candidate {
             true,
         )?;
         for (field, value) in [
+            (
+                "candidate source_canonical_target",
+                self.source_canonical_target.as_deref(),
+            ),
             ("candidate source_app", self.source_app.as_deref()),
             ("candidate source_app_id", self.source_app_id.as_deref()),
         ] {
@@ -560,7 +651,11 @@ impl Candidate {
             "candidate thumbnail_png_base64",
             self.thumbnail_png_base64.as_deref(),
             MAX_THUMBNAIL_BASE64_BYTES,
-        )
+        )?;
+        if let Some(preflight) = &self.capability_preflight {
+            preflight.validate()?;
+        }
+        Ok(())
     }
 }
 
