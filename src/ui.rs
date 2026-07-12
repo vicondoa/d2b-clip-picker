@@ -1117,6 +1117,7 @@ mod theme_tests {
             entry_id: "entry".to_owned(),
             source_realm: "dev".to_owned(),
             source_realm_kind: RealmKind::Vm,
+            source_canonical_target: None,
             source_provider_kind: PresentationProviderKind::LocalVm,
             source_isolation_posture: PresentationIsolationPosture::VirtualMachine,
             source_app: None,
@@ -1128,6 +1129,7 @@ mod theme_tests {
             thumbnail_png_base64: None,
             byte_count: None,
             confirmation_required: false,
+            capability_preflight: None,
         };
         assert_eq!(source_label(&candidate), "dev");
     }
@@ -1137,6 +1139,7 @@ mod theme_tests {
         let destination = crate::protocol::DestinationMetadata {
             realm: "host-tools".to_owned(),
             realm_kind: RealmKind::UnsafeLocal,
+            canonical_target: None,
             provider_kind: PresentationProviderKind::UnsafeLocal,
             isolation_posture: PresentationIsolationPosture::UnsafeLocal,
             application: Some("Browser".to_owned()),
@@ -1145,6 +1148,7 @@ mod theme_tests {
             workspace: None,
             output: None,
             attribution: Some(AttributionQuality::ExactClient),
+            capability_preflight: None,
         };
 
         let presentation = destination_presentation(&destination);
@@ -1160,6 +1164,7 @@ mod theme_tests {
         let destination = crate::protocol::DestinationMetadata {
             realm: "dev".to_owned(),
             realm_kind: RealmKind::Vm,
+            canonical_target: None,
             provider_kind: PresentationProviderKind::LocalVm,
             isolation_posture: PresentationIsolationPosture::VirtualMachine,
             application: Some("Firefox".to_owned()),
@@ -1168,6 +1173,7 @@ mod theme_tests {
             workspace: None,
             output: None,
             attribution: Some(AttributionQuality::ExactClient),
+            capability_preflight: None,
         };
         let request = OpenRequest {
             selected_protocol_version: 2,
@@ -1196,6 +1202,7 @@ mod theme_tests {
         let destination = crate::protocol::DestinationMetadata {
             realm: "dev".to_owned(),
             realm_kind: RealmKind::Vm,
+            canonical_target: None,
             provider_kind: PresentationProviderKind::LocalVm,
             isolation_posture: PresentationIsolationPosture::VirtualMachine,
             application: None,
@@ -1204,6 +1211,7 @@ mod theme_tests {
             workspace: None,
             output: None,
             attribution: Some(AttributionQuality::ExactClient),
+            capability_preflight: None,
         };
 
         assert_eq!(destination_presentation(&destination).warning, None);

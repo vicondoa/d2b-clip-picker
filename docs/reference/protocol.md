@@ -28,6 +28,11 @@ The v2 decoder accepts v1 omission: absent provider/posture fields become the
 explicit bounded `unknown` state. Version 1 remains supported for this release
 window and may be removed only in a later compatibility-breaking release.
 
+Existing d2b v1 frames may also carry optional canonical-target and clipboard
+capability-preflight metadata. The picker validates and accepts those fields for
+wire compatibility, redacts their dynamic values from `Debug`, and never uses
+them to authorize or fulfill a transfer.
+
 ## Request presentation metadata
 
 Protocol v2 adds these optional fields:
@@ -93,6 +98,7 @@ The picker enforces these boundary caps before opening the UI:
 | Preview | 2,048 bytes |
 | Base64 thumbnail field | 349,528 bytes |
 | Realm display entries | 64 |
+| Capability tokens per list | 64 |
 | Request or entry id | 256 bytes |
 | MIME type | 256 bytes |
 

@@ -2,6 +2,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- Accept the bounded canonical-target and clipboard capability-preflight fields
+  emitted by deployed d2b protocol-v1 frames while keeping them
+  presentation-only and redacted.
+
 ## [0.2.0] - 2026-07-11
 
 ### Added

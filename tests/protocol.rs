@@ -1,8 +1,9 @@
 use d2b_clip_picker::protocol::{
-    AttributionQuality, Candidate, ClipdFrame, DestinationMetadata, IpcPeer, MAX_CANDIDATES,
-    OpenRequest, PROTOCOL_MAX, PROTOCOL_MIN, PickerFrame, PlacementHints,
-    PresentationIsolationPosture, PresentationProviderKind, RealmDisplayMetadata, RealmKind,
-    sanitize_preview,
+    AttributionQuality, Candidate, ClipboardCapabilityPreflight,
+    ClipboardCapabilityPreflightStatus, ClipboardTransferAuthority, ClipdFrame,
+    DestinationMetadata, IpcPeer, MAX_CANDIDATES, MAX_CAPABILITY_TOKENS, OpenRequest, PROTOCOL_MAX,
+    PROTOCOL_MIN, PickerFrame, PlacementHints, PresentationIsolationPosture,
+    PresentationProviderKind, RealmDisplayMetadata, RealmKind, sanitize_preview,
 };
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
@@ -16,6 +17,7 @@ fn sample_request() -> OpenRequest {
         destination: DestinationMetadata {
             realm: "personal".to_owned(),
             realm_kind: RealmKind::Vm,
+            canonical_target: Some("general.personal.d2b".to_owned()),
             provider_kind: PresentationProviderKind::LocalVm,
             isolation_posture: PresentationIsolationPosture::VirtualMachine,
             application: Some("Firefox".to_owned()),
@@ -24,6 +26,7 @@ fn sample_request() -> OpenRequest {
             workspace: Some("1".to_owned()),
             output: Some("DP-1".to_owned()),
             attribution: Some(AttributionQuality::ExactClient),
+            capability_preflight: Some(capability_preflight()),
         },
         requested_mime_type: "text/plain".to_owned(),
         expires_at_unix_ms: Some(1_800_000_000_000),
@@ -40,6 +43,7 @@ fn sample_request() -> OpenRequest {
             entry_id: "entry-1".to_owned(),
             source_realm: "host".to_owned(),
             source_realm_kind: RealmKind::UnsafeLocal,
+            source_canonical_target: Some("tools.host.d2b".to_owned()),
             source_provider_kind: PresentationProviderKind::UnsafeLocal,
             source_isolation_posture: PresentationIsolationPosture::UnsafeLocal,
             source_app: Some("Terminal".to_owned()),
@@ -51,8 +55,19 @@ fn sample_request() -> OpenRequest {
             thumbnail_png_base64: None,
             byte_count: Some(5),
             confirmation_required: false,
+            capability_preflight: Some(capability_preflight()),
         }],
         realm_display: Default::default(),
+    }
+}
+
+fn capability_preflight() -> ClipboardCapabilityPreflight {
+    ClipboardCapabilityPreflight {
+        status: ClipboardCapabilityPreflightStatus::Satisfied,
+        required_capabilities: vec!["clipboard".to_owned()],
+        advertised_capabilities: vec!["clipboard".to_owned()],
+        missing_capabilities: Vec::new(),
+        authority: ClipboardTransferAuthority::PickerClipd,
     }
 }
 
@@ -301,6 +316,86 @@ fn v2_roundtrip_preserves_bounded_provider_and_posture_values() {
 }
 
 #[test]
+fn deployed_d2b_v1_frame_accepts_canonical_target_and_capability_preflight() {
+    let json = serde_json::json!({
+        "type": "open_request",
+        "selected_protocol_version": 1,
+        "clipd_version": "0.0.0-bootstrap",
+        "picker_version": "0.2.0",
+        "request_id": "request",
+        "destination": {
+            "realm": "dev",
+            "realm_kind": "vm",
+            "canonical_target": "general.dev.d2b",
+            "provider_kind": "local-vm",
+            "application": "Firefox",
+            "app_id": "d2b.dev-general.firefox",
+            "attribution": "exact_client",
+            "capability_preflight": {
+                "status": "satisfied",
+                "required_capabilities": ["clipboard"],
+                "advertised_capabilities": ["clipboard"],
+                "missing_capabilities": [],
+                "authority": "picker_clipd"
+            }
+        },
+        "requested_mime_type": "text/plain",
+        "expires_at_unix_ms": 1_800_000_000_000_u64,
+        "placement_hints": null,
+        "candidates": [{
+            "entry_id": "current-host-selection",
+            "source_realm": "Host",
+            "source_realm_kind": "host",
+            "source_canonical_target": "tools.host.d2b",
+            "source_provider_kind": "unsafe-local",
+            "source_app": "Terminal",
+            "source_app_id": "foot",
+            "source_attribution": "focused_window_guess",
+            "preview_text": null,
+            "content_type": "text/plain",
+            "timestamp_unix_ms": 1_700_000_000_000_u64,
+            "thumbnail_png_base64": null,
+            "byte_count": 24,
+            "confirmation_required": false,
+            "capability_preflight": {
+                "status": "satisfied",
+                "required_capabilities": ["clipboard"],
+                "advertised_capabilities": ["clipboard"],
+                "missing_capabilities": [],
+                "authority": "picker_clipd"
+            }
+        }]
+    });
+
+    let frame: ClipdFrame = serde_json::from_value(json).expect("deployed d2b frame");
+    frame.validate().expect("valid deployed d2b frame");
+    let ClipdFrame::OpenRequest(request) = frame else {
+        panic!("expected open request");
+    };
+    assert_eq!(
+        request.destination.canonical_target.as_deref(),
+        Some("general.dev.d2b")
+    );
+    assert_eq!(
+        request.candidates[0].source_canonical_target.as_deref(),
+        Some("tools.host.d2b")
+    );
+    assert_eq!(
+        request
+            .destination
+            .capability_preflight
+            .as_ref()
+            .map(|preflight| preflight.authority),
+        Some(ClipboardTransferAuthority::PickerClipd)
+    );
+
+    let debug = format!("{request:?}");
+    assert!(!debug.contains("general.dev.d2b"));
+    assert!(!debug.contains("tools.host.d2b"));
+    assert!(!debug.contains("clipboard"));
+}
+
+#[test]
 fn unknown_fields_and_future_closed_values_fail_visibly() {
     let unknown_field = r#"{
         "realm":"work",
@@ -367,6 +462,37 @@ fn request_validation_enforces_candidate_and_metadata_bounds() {
             .to_string()
             .contains(&oversized_realm.destination.realm)
     );
+}
+
+#[test]
+fn request_validation_enforces_capability_preflight_list_bounds() {
+    for field in [
+        "required_capabilities",
+        "advertised_capabilities",
+        "missing_capabilities",
+    ] {
+        let mut request = sample_request();
+        let preflight = request
+            .destination
+            .capability_preflight
+            .as_mut()
+            .expect("preflight");
+        let oversized = vec!["clipboard".to_owned(); MAX_CAPABILITY_TOKENS + 1];
+        match field {
+            "required_capabilities" => preflight.required_capabilities = oversized,
+            "advertised_capabilities" => preflight.advertised_capabilities = oversized,
+            "missing_capabilities" => preflight.missing_capabilities = oversized,
+            _ => unreachable!(),
+        }
+
+        let error = request.validate().expect_err("capability token cap");
+        assert!(error.to_string().contains(field));
+        assert!(
+            error
+                .to_string()
+                .contains(&format!("count exceeds {MAX_CAPABILITY_TOKENS}"))
+        );
+    }
 }
 
 #[test]
