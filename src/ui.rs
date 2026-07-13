@@ -1,8 +1,10 @@
-use crate::placement::PickerPlacement;
+use self::foreign_toplevel_focus::{FocusObserverEvent, spawn_foreign_toplevel_focus_observer};
+use crate::placement::{MovablePlacement, PickerPlacement, UsableArea, WorkAreaProbe};
 use crate::protocol::{
-    AttributionQuality, Candidate, ClipdFrame, IpcPeer, MAX_OPEN_REQUEST_BYTES, OpenRequest,
-    PickerTx, PresentationIsolationPosture, PresentationProviderKind, RealmDisplayMetadata,
-    RealmKind, display_content_kind, read_bounded_line, sanitize_preview,
+    AttributionQuality, Candidate, ClipdFrame, DestinationMetadata, IpcPeer,
+    MAX_OPEN_REQUEST_BYTES, OpenRequest, PickerTx, PlacementHints, PresentationIsolationPosture,
+    PresentationProviderKind, RealmDisplayMetadata, RealmKind, display_content_kind,
+    read_bounded_line, sanitize_preview,
 };
 use base64::Engine;
 use gtk4::gdk::prelude::MonitorExt;
@@ -20,6 +22,300 @@ use std::sync::mpsc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 pub const UNSAFE_LOCAL_WARNING: &str = "unsafe-local · no isolation";
+pub const PIN_WIDGET_NAME: &str = "d2b-pin-toggle";
+pub const PIN_ICON_WIDGET_NAME: &str = "d2b-pin-icon";
+pub const PIN_ICON_NAME: &str = "view-pin-symbolic";
+pub const PIN_ICON_THEME: &str = "Adwaita";
+pub const DRAG_HANDLE_WIDGET_NAME: &str = "d2b-drag-handle";
+pub const RENDER_WIDTH: i32 = 420;
+pub const RENDER_HEIGHT: i32 = 520;
+pub const PICKER_BOOTSTRAP_KEYBOARD_MODE: KeyboardMode = KeyboardMode::Exclusive;
+pub const PICKER_STEADY_KEYBOARD_MODE: KeyboardMode = KeyboardMode::OnDemand;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FocusTransition {
+    None,
+    Cancel,
+}
+
+mod foreign_toplevel_focus {
+    use std::collections::HashMap;
+    use std::sync::mpsc::{self, Receiver, Sender};
+    use std::thread;
+
+    use log::{debug, info};
+    use wayland_client::globals::{GlobalListContents, registry_queue_init};
+    use wayland_client::protocol::wl_registry;
+    use wayland_client::{Connection, Dispatch, Proxy, QueueHandle};
+    use wayland_protocols_wlr::foreign_toplevel::v1::client::{
+        zwlr_foreign_toplevel_handle_v1::{self as toplevel_handle, ZwlrForeignToplevelHandleV1},
+        zwlr_foreign_toplevel_manager_v1::{
+            self as toplevel_manager, ZwlrForeignToplevelManagerV1,
+        },
+    };
+
+    #[derive(Debug)]
+    pub(super) enum FocusObserverEvent {
+        NormalToplevelActivated,
+        Unavailable(String),
+    }
+
+    #[derive(Debug, Default)]
+    struct HandleState {
+        activated: bool,
+        pending_activated: Option<bool>,
+    }
+
+    struct ObserverState {
+        handles: HashMap<u32, HandleState>,
+        baseline_complete: bool,
+        stopped: bool,
+        tx: Sender<FocusObserverEvent>,
+    }
+
+    impl ObserverState {
+        fn new(tx: Sender<FocusObserverEvent>) -> Self {
+            Self {
+                handles: HashMap::new(),
+                baseline_complete: false,
+                stopped: false,
+                tx,
+            }
+        }
+
+        fn finish_baseline(&mut self) {
+            self.baseline_complete = true;
+        }
+
+        fn register(&mut self, handle: &ZwlrForeignToplevelHandleV1) {
+            debug!("foreign-toplevel observer registered a normal toplevel");
+            self.handles.entry(handle.id().protocol_id()).or_default();
+        }
+
+        fn set_pending_state(&mut self, handle: &ZwlrForeignToplevelHandleV1, state: &[u8]) {
+            let activated = is_activated_state(state);
+            self.handles
+                .entry(handle.id().protocol_id())
+                .or_default()
+                .pending_activated = Some(activated);
+        }
+
+        fn commit(&mut self, handle: &ZwlrForeignToplevelHandleV1) {
+            let state = self.handles.entry(handle.id().protocol_id()).or_default();
+            let activated = state.pending_activated.take().unwrap_or(state.activated);
+            let became_activated =
+                should_notify_activation(self.baseline_complete, state.activated, activated);
+            state.activated = activated;
+            debug!(
+                "foreign-toplevel observer state committed: activated={activated} baseline={}",
+                self.baseline_complete
+            );
+
+            if became_activated
+                && self
+                    .tx
+                    .send(FocusObserverEvent::NormalToplevelActivated)
+                    .is_err()
+            {
+                self.stopped = true;
+            }
+        }
+
+        fn remove(&mut self, handle: &ZwlrForeignToplevelHandleV1) {
+            self.handles.remove(&handle.id().protocol_id());
+        }
+    }
+
+    fn is_activated_state(state: &[u8]) -> bool {
+        state.chunks_exact(4).any(|value| {
+            let value = u32::from_ne_bytes(value.try_into().expect("four-byte state"));
+            value == toplevel_handle::State::Activated as u32
+        })
+    }
+
+    fn should_notify_activation(
+        baseline_complete: bool,
+        was_active: bool,
+        is_active: bool,
+    ) -> bool {
+        baseline_complete && !was_active && is_active
+    }
+
+    pub(super) fn spawn_foreign_toplevel_focus_observer() -> Receiver<FocusObserverEvent> {
+        let (tx, rx) = mpsc::channel();
+        let thread_tx = tx.clone();
+        if let Err(error) = thread::Builder::new()
+            .name("d2b-focus-observer".to_owned())
+            .spawn(move || {
+                if let Err(error) = run_observer(thread_tx.clone()) {
+                    let _ = thread_tx.send(FocusObserverEvent::Unavailable(error.to_string()));
+                }
+            })
+        {
+            let _ = tx.send(FocusObserverEvent::Unavailable(format!(
+                "could not start focus observer: {error}"
+            )));
+        }
+        rx
+    }
+
+    fn run_observer(
+        tx: Sender<FocusObserverEvent>,
+    ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        let connection = Connection::connect_to_env()?;
+        let (globals, mut queue) = registry_queue_init::<ObserverState>(&connection)?;
+        let _manager =
+            globals.bind::<ZwlrForeignToplevelManagerV1, _, _>(&queue.handle(), 1..=3, ())?;
+        let mut state = ObserverState::new(tx);
+
+        queue.roundtrip(&mut state)?;
+        state.finish_baseline();
+        info!("foreign-toplevel focus observer baseline complete");
+
+        while !state.stopped {
+            queue.blocking_dispatch(&mut state)?;
+        }
+        Ok(())
+    }
+
+    impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for ObserverState {
+        fn event(
+            _state: &mut Self,
+            _registry: &wl_registry::WlRegistry,
+            _event: wl_registry::Event,
+            _data: &GlobalListContents,
+            _connection: &Connection,
+            _queue: &QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for ObserverState {
+        fn event(
+            state: &mut Self,
+            _manager: &ZwlrForeignToplevelManagerV1,
+            event: toplevel_manager::Event,
+            _data: &(),
+            _connection: &Connection,
+            _queue: &QueueHandle<Self>,
+        ) {
+            match event {
+                toplevel_manager::Event::Toplevel { toplevel } => state.register(&toplevel),
+                toplevel_manager::Event::Finished => {
+                    let _ = state.tx.send(FocusObserverEvent::Unavailable(
+                        "foreign-toplevel focus observer was stopped by the compositor".to_owned(),
+                    ));
+                    state.stopped = true;
+                }
+                _ => {}
+            }
+        }
+
+        wayland_client::event_created_child!(ObserverState, ZwlrForeignToplevelManagerV1, [
+            toplevel_manager::EVT_TOPLEVEL_OPCODE => (ZwlrForeignToplevelHandleV1, ())
+        ]);
+    }
+
+    impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for ObserverState {
+        fn event(
+            state: &mut Self,
+            handle: &ZwlrForeignToplevelHandleV1,
+            event: toplevel_handle::Event,
+            _data: &(),
+            _connection: &Connection,
+            _queue: &QueueHandle<Self>,
+        ) {
+            match event {
+                toplevel_handle::Event::State { state: next } => {
+                    state.set_pending_state(handle, &next);
+                }
+                toplevel_handle::Event::Done => state.commit(handle),
+                toplevel_handle::Event::Closed => state.remove(handle),
+                _ => {}
+            }
+        }
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn state_bytes(states: &[toplevel_handle::State]) -> Vec<u8> {
+            states
+                .iter()
+                .flat_map(|state| (*state as u32).to_ne_bytes())
+                .collect()
+        }
+
+        #[test]
+        fn activated_state_parser_ignores_other_presentation_states() {
+            let inactive = state_bytes(&[
+                toplevel_handle::State::Maximized,
+                toplevel_handle::State::Fullscreen,
+            ]);
+            let active = state_bytes(&[
+                toplevel_handle::State::Maximized,
+                toplevel_handle::State::Activated,
+            ]);
+
+            assert!(!is_activated_state(&inactive));
+            assert!(is_activated_state(&active));
+        }
+
+        #[test]
+        fn baseline_and_repeated_active_states_do_not_notify() {
+            assert!(!should_notify_activation(false, false, true));
+            assert!(should_notify_activation(true, false, true));
+            assert!(!should_notify_activation(true, true, true));
+            assert!(!should_notify_activation(true, true, false));
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct FocusLifecycle {
+    had_focus: bool,
+    focused: bool,
+    pinned: bool,
+    terminal_sent: bool,
+}
+
+impl FocusLifecycle {
+    pub fn focus_changed(&mut self, focused: bool) -> FocusTransition {
+        self.focused = focused;
+        if focused {
+            self.had_focus = true;
+            return FocusTransition::None;
+        }
+        self.cancel_if_transient()
+    }
+
+    pub fn set_pinned(&mut self, pinned: bool) -> FocusTransition {
+        self.pinned = pinned;
+        self.cancel_if_transient()
+    }
+
+    pub fn is_pinned(&self) -> bool {
+        self.pinned
+    }
+
+    pub fn claim_terminal(&mut self) -> bool {
+        if self.terminal_sent {
+            false
+        } else {
+            self.terminal_sent = true;
+            true
+        }
+    }
+
+    fn cancel_if_transient(&mut self) -> FocusTransition {
+        if self.had_focus && !self.focused && !self.pinned && self.claim_terminal() {
+            FocusTransition::Cancel
+        } else {
+            FocusTransition::None
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct EndpointPresentation {
@@ -170,6 +466,12 @@ impl ThemePalette {
             border-radius: 12px;
         }}
         headerbar {{ background: transparent; box-shadow: none; }}
+        .drag-handle {{ padding: 8px 12px; }}
+        .pin-toggle {{ min-width: 24px; padding: 4px 6px; }}
+        .pin-toggle:checked {{
+            background: {accent};
+            color: {foreground};
+        }}
         .clipboard-list {{ background: transparent; }}
         .clipboard-item {{
             border: 1px solid {border};
@@ -194,6 +496,7 @@ impl ThemePalette {
             background = self.background,
             foreground = self.foreground,
             border = self.border,
+            accent = self.accent,
             selected_background = self.selected_background,
             realm_background = self.realm_background,
             search_background = self.search_background,
@@ -230,25 +533,35 @@ pub fn run_picker(
         .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build()
         .upcast();
+    let lifecycle = Rc::new(RefCell::new(FocusLifecycle::default()));
 
     let request_for_activate = request.clone();
     let placement_for_activate = placement.clone();
     let theme_for_activate = theme.clone();
+    let lifecycle_for_activate = lifecycle.clone();
     app.connect_activate(move |app| {
-        let window = create_window(
+        let runtime = PickerRuntime {
+            tx: Some(tx.clone()),
+            app: app.clone(),
+            lifecycle: lifecycle_for_activate.clone(),
+            dismiss_on_focus_loss: true,
+        };
+        let built = create_window(
             app,
             request_for_activate.clone(),
-            tx.clone(),
+            runtime,
             placement_for_activate.clone(),
             test_select_first,
             theme_for_activate.clone(),
         );
-        window.present();
+        built.window.present();
     });
 
     let app_for_socket = app.clone();
+    let lifecycle_for_socket = lifecycle.clone();
     glib::timeout_add_local(Duration::from_millis(100), move || {
         if socket_closed_rx.try_recv().is_ok() {
+            lifecycle_for_socket.borrow_mut().claim_terminal();
             app_for_socket.quit();
             glib::ControlFlow::Break
         } else {
@@ -260,21 +573,404 @@ pub fn run_picker(
     Ok(())
 }
 
+pub fn render_sample(output: &Path, theme: ThemePalette) -> Result<(), Box<dyn std::error::Error>> {
+    if output.extension().and_then(|extension| extension.to_str()) != Some("png") {
+        return Err("--render-sample output must use the .png extension".into());
+    }
+    if !output.parent().is_none_or(Path::exists) {
+        return Err("--render-sample output parent directory does not exist".into());
+    }
+
+    adw::init()?;
+    let app: gtk4::Application = adw::Application::builder()
+        .application_id("io.github.vicondoa.d2b_clip_picker.render")
+        .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
+        .build()
+        .upcast();
+    let result = Rc::new(RefCell::new(None::<Result<(), String>>));
+    let request = render_sample_request();
+    let placement = PickerPlacement::from_hints(
+        request
+            .placement_hints
+            .as_ref()
+            .expect("render sample placement"),
+    );
+    let output = output.to_path_buf();
+
+    let result_for_activate = result.clone();
+    app.connect_activate(move |app| {
+        let runtime = PickerRuntime {
+            tx: None,
+            app: app.clone(),
+            lifecycle: Rc::new(RefCell::new(FocusLifecycle::default())),
+            dismiss_on_focus_loss: false,
+        };
+        let built = create_window(
+            app,
+            request.clone(),
+            runtime,
+            placement.clone(),
+            false,
+            theme.clone(),
+        );
+        if let Err(error) = assert_render_structure(&built, &request) {
+            *result_for_activate.borrow_mut() = Some(Err(error));
+            app.quit();
+            return;
+        }
+
+        let pin_button = built.pin_button.clone();
+        let output = output.clone();
+        let result_for_map = result_for_activate.clone();
+        let app_for_map = app.clone();
+        built.window.connect_map(move |window| {
+            let pin_button = pin_button.clone();
+            let output = output.clone();
+            let result_for_map = result_for_map.clone();
+            let app_for_map = app_for_map.clone();
+            let window = window.clone();
+            glib::timeout_add_local_once(Duration::from_millis(300), move || {
+                let capture = if !pin_button.is_visible() {
+                    Err("production pin control is not visible".to_owned())
+                } else {
+                    capture_widget_png(&window, &output).map_err(|error| error.to_string())
+                };
+                *result_for_map.borrow_mut() = Some(capture);
+                app_for_map.quit();
+            });
+        });
+        built.window.present();
+    });
+
+    let result_for_timeout = result.clone();
+    let app_for_timeout = app.clone();
+    glib::timeout_add_local_once(Duration::from_secs(10), move || {
+        if result_for_timeout.borrow().is_none() {
+            *result_for_timeout.borrow_mut() =
+                Some(Err("timed out rendering picker sample".to_owned()));
+            app_for_timeout.quit();
+        }
+    });
+
+    app.run_with_args::<String>(&[]);
+    result
+        .borrow_mut()
+        .take()
+        .unwrap_or_else(|| Err("picker render exited without a result".to_owned()))
+        .map_err(Into::into)
+}
+
+pub fn render_sample_request() -> OpenRequest {
+    let candidate = |entry_id: &str,
+                     realm: &str,
+                     realm_kind: RealmKind,
+                     provider: PresentationProviderKind,
+                     isolation: PresentationIsolationPosture,
+                     app: &str,
+                     preview: Option<&str>,
+                     content_type: &str,
+                     byte_count: Option<u64>,
+                     confirmation_required: bool| {
+        Candidate {
+            entry_id: entry_id.to_owned(),
+            source_realm: realm.to_owned(),
+            source_realm_kind: realm_kind,
+            source_canonical_target: None,
+            source_provider_kind: provider,
+            source_isolation_posture: isolation,
+            source_app: Some(app.to_owned()),
+            source_app_id: None,
+            source_attribution: AttributionQuality::ExactClient,
+            preview_text: preview.map(str::to_owned),
+            content_type: content_type.to_owned(),
+            timestamp_unix_ms: None,
+            thumbnail_png_base64: None,
+            byte_count,
+            confirmation_required,
+            capability_preflight: None,
+        }
+    };
+    OpenRequest {
+        selected_protocol_version: 2,
+        clipd_version: "render-sample".to_owned(),
+        picker_version: crate::VERSION.to_owned(),
+        request_id: "synthetic-render-request".to_owned(),
+        destination: DestinationMetadata {
+            realm: "personal-dev".to_owned(),
+            realm_kind: RealmKind::Vm,
+            canonical_target: None,
+            provider_kind: PresentationProviderKind::LocalVm,
+            isolation_posture: PresentationIsolationPosture::VirtualMachine,
+            application: Some("Browser".to_owned()),
+            app_id: None,
+            title: None,
+            workspace: Some("development".to_owned()),
+            output: None,
+            attribution: Some(AttributionQuality::ExactClient),
+            capability_preflight: None,
+        },
+        requested_mime_type: "text/plain".to_owned(),
+        expires_at_unix_ms: None,
+        placement_hints: Some(PlacementHints {
+            pointer_x: Some(760.0),
+            pointer_y: Some(96.0),
+            output_width: Some(1280),
+            output_height: Some(720),
+            overlay_width: Some(RENDER_WIDTH),
+            overlay_height: Some(RENDER_HEIGHT),
+            output: None,
+        }),
+        candidates: vec![
+            candidate(
+                "sample-work",
+                "work",
+                RealmKind::Vm,
+                PresentationProviderKind::LocalVm,
+                PresentationIsolationPosture::VirtualMachine,
+                "Editor",
+                Some("Release checklist with deterministic sample text"),
+                "text/plain",
+                Some(49),
+                false,
+            ),
+            candidate(
+                "sample-research",
+                "research",
+                RealmKind::Vm,
+                PresentationProviderKind::QemuMedia,
+                PresentationIsolationPosture::VirtualMachine,
+                "Reader",
+                Some("Architecture notes and test evidence"),
+                "text/plain",
+                Some(36),
+                false,
+            ),
+            candidate(
+                "sample-provider",
+                "managed",
+                RealmKind::Vm,
+                PresentationProviderKind::ProviderManaged,
+                PresentationIsolationPosture::ProviderManaged,
+                "Console",
+                Some("Provider-managed clipboard sample"),
+                "text/plain",
+                Some(33),
+                true,
+            ),
+            candidate(
+                "sample-image",
+                "host",
+                RealmKind::Host,
+                PresentationProviderKind::UnsafeLocal,
+                PresentationIsolationPosture::UnsafeLocal,
+                "Image viewer",
+                None,
+                "image/png",
+                Some(18_432),
+                false,
+            ),
+            candidate(
+                "sample-host-text",
+                "host",
+                RealmKind::UnsafeLocal,
+                PresentationProviderKind::UnsafeLocal,
+                PresentationIsolationPosture::UnsafeLocal,
+                "Terminal",
+                Some("Host-side text placeholder"),
+                "text/plain",
+                Some(26),
+                false,
+            ),
+        ],
+        realm_display: HashMap::from([
+            (
+                "work".to_owned(),
+                RealmDisplayMetadata {
+                    color: Some("#7fc8ff".to_owned()),
+                },
+            ),
+            (
+                "research".to_owned(),
+                RealmDisplayMetadata {
+                    color: Some("#90d090".to_owned()),
+                },
+            ),
+            (
+                "managed".to_owned(),
+                RealmDisplayMetadata {
+                    color: Some("#c8a0e0".to_owned()),
+                },
+            ),
+            (
+                "host".to_owned(),
+                RealmDisplayMetadata {
+                    color: Some("#ffb347".to_owned()),
+                },
+            ),
+        ]),
+    }
+}
+
+fn assert_render_structure(built: &BuiltPickerWindow, request: &OpenRequest) -> Result<(), String> {
+    if !configured_icon_theme().has_icon(PIN_ICON_NAME) {
+        return Err(format!(
+            "render mode requires packaged GTK icon {PIN_ICON_NAME}"
+        ));
+    }
+    let distinct_realms = request
+        .candidates
+        .iter()
+        .map(|candidate| candidate.source_realm.as_str())
+        .collect::<std::collections::HashSet<_>>();
+    if request.candidates.len() < 4 || distinct_realms.len() < 3 {
+        return Err("render sample must contain multiple rows and realms".to_owned());
+    }
+    if !request.candidates.iter().any(|candidate| {
+        candidate.source_isolation_posture == PresentationIsolationPosture::UnsafeLocal
+    }) || !request.candidates.iter().any(|candidate| {
+        candidate.source_provider_kind == PresentationProviderKind::ProviderManaged
+    }) {
+        return Err("render sample must exercise multiple provider postures".to_owned());
+    }
+    if built.pin_button.widget_name() != PIN_WIDGET_NAME
+        || built.pin_button.label().is_some()
+        || built.pin_button.child().is_none()
+        || built.pin_button.is_active()
+    {
+        return Err(
+            "production pin control must use icon content and be unpinned by default".to_owned(),
+        );
+    }
+    if built.pin_icon.widget_name() != PIN_ICON_WIDGET_NAME {
+        return Err("production pin control is missing its monochrome icon".to_owned());
+    }
+    match built.pin_icon_source {
+        PinIconSource::ThemeSymbolic if built.pin_icon.paintable().is_none() => {
+            return Err("theme symbolic pin icon has no image content".to_owned());
+        }
+        PinIconSource::GeneratedMonochrome => {
+            return Err("render mode must exercise the packaged symbolic pin icon".to_owned());
+        }
+        _ => {}
+    }
+    if !widget_tree_contains(&built.root, PIN_WIDGET_NAME)
+        || !widget_tree_contains(&built.root, PIN_ICON_WIDGET_NAME)
+        || !widget_tree_contains(&built.root, DRAG_HANDLE_WIDGET_NAME)
+    {
+        return Err("production picker structure is missing pin or drag chrome".to_owned());
+    }
+    Ok(())
+}
+
+fn widget_tree_contains(root: &impl IsA<gtk4::Widget>, widget_name: &str) -> bool {
+    let root = root.as_ref();
+    if root.widget_name() == widget_name {
+        return true;
+    }
+    let mut child = root.first_child();
+    while let Some(widget) = child {
+        if widget_tree_contains(&widget, widget_name) {
+            return true;
+        }
+        child = widget.next_sibling();
+    }
+    false
+}
+
+fn capture_widget_png(
+    window: &adw::ApplicationWindow,
+    output: &Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let width = window.allocated_width();
+    let height = window.allocated_height();
+    if (width, height) != (RENDER_WIDTH, RENDER_HEIGHT) {
+        return Err(format!(
+            "production picker allocated {width}x{height}; expected {RENDER_WIDTH}x{RENDER_HEIGHT}"
+        )
+        .into());
+    }
+
+    let paintable = gtk4::WidgetPaintable::new(Some(window));
+    let snapshot = gtk4::Snapshot::new();
+    paintable.snapshot(&snapshot, width as f64, height as f64);
+    let node = snapshot
+        .to_node()
+        .ok_or("production widget snapshot was empty")?;
+    let surface =
+        gtk4::prelude::NativeExt::surface(window).ok_or("picker surface is unavailable")?;
+    let renderer =
+        gtk4::gsk::Renderer::for_surface(&surface).ok_or("picker renderer is unavailable")?;
+    let viewport = gtk4::graphene::Rect::new(0.0, 0.0, width as f32, height as f32);
+    let texture = renderer.render_texture(&node, Some(&viewport));
+    renderer.unrealize();
+    if (texture.width(), texture.height()) != (RENDER_WIDTH, RENDER_HEIGHT) {
+        return Err(format!(
+            "rendered texture is {}x{}; expected {RENDER_WIDTH}x{RENDER_HEIGHT}",
+            texture.width(),
+            texture.height()
+        )
+        .into());
+    }
+
+    let stride = texture.width() as usize * 4;
+    let mut pixels = vec![0_u8; stride * texture.height() as usize];
+    texture.download(&mut pixels, stride);
+    let first = pixels
+        .first_chunk::<4>()
+        .ok_or("rendered texture is empty")?;
+    if pixels.chunks_exact(4).all(|pixel| pixel == first) {
+        return Err("rendered texture is uniform".into());
+    }
+
+    texture.save_to_png(output)?;
+    let bytes = std::fs::read(output)?;
+    if bytes.len() >= 5 * 1024 * 1024 {
+        return Err("rendered PNG must remain below 5 MB".into());
+    }
+    if png_dimensions(&bytes) != Some((RENDER_WIDTH as u32, RENDER_HEIGHT as u32)) {
+        return Err("rendered PNG signature or logical dimensions are invalid".into());
+    }
+    Ok(())
+}
+
+#[derive(Clone)]
+struct PickerRuntime {
+    tx: Option<PickerTx>,
+    app: gtk4::Application,
+    lifecycle: Rc<RefCell<FocusLifecycle>>,
+    dismiss_on_focus_loss: bool,
+}
+
+struct BuiltPickerWindow {
+    window: adw::ApplicationWindow,
+    root: gtk4::Box,
+    pin_button: gtk4::ToggleButton,
+    pin_icon: gtk4::Image,
+    pin_icon_source: PinIconSource,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PinIconSource {
+    ThemeSymbolic,
+    GeneratedMonochrome,
+}
+
 fn create_window(
     app: &gtk4::Application,
     request: OpenRequest,
-    tx: PickerTx,
+    runtime: PickerRuntime,
     mut placement: PickerPlacement,
     test_select_first: bool,
     theme: ThemePalette,
-) -> adw::ApplicationWindow {
+) -> BuiltPickerWindow {
     configure_color_scheme();
     let window = adw::ApplicationWindow::builder()
         .application(app)
         .title("d2b clipboard picker")
         .decorated(false)
-        .default_width(420)
-        .default_height(520)
+        .default_width(placement.geometry.overlay_width)
+        .default_height(placement.geometry.overlay_height)
+        .resizable(false)
         .build();
     window.add_css_class("d2b-clip-picker");
     window.init_layer_shell();
@@ -305,26 +1001,48 @@ fn create_window(
         placement.geometry.overlay_height,
         placement.output
     );
-    window.set_exclusive_zone(-1);
-    window.set_keyboard_mode(KeyboardMode::Exclusive);
+    window.set_exclusive_zone(0);
+    window.set_keyboard_mode(PICKER_BOOTSTRAP_KEYBOARD_MODE);
+    let output_for_refresh = placement.output.clone();
     let placement = placement.geometry;
+    let usable_area = UsableArea::new(placement.output_width, placement.output_height);
     window.set_anchor(Edge::Top, true);
     window.set_anchor(Edge::Left, true);
-    window.set_margin(Edge::Top, placement.y as i32);
-    window.set_margin(Edge::Left, placement.x as i32);
-
-    if placement.output_width > 0 && placement.output_height > 0 {
-        window.connect_map(move |mapped| {
-            let mapped = mapped.clone();
-            glib::idle_add_local_once(move || {
-                let margin = 8.0;
-                let width = mapped.allocated_width().max(placement.overlay_width) as f64;
-                let height = mapped.allocated_height().max(placement.overlay_height) as f64;
-                let max_x = (placement.output_width as f64 - width - margin).max(margin);
-                let max_y = (placement.output_height as f64 - height - margin).max(margin);
-                mapped.set_margin(Edge::Top, placement.y.clamp(margin, max_y) as i32);
-                mapped.set_margin(Edge::Left, placement.x.clamp(margin, max_x) as i32);
-            });
+    let movable = Rc::new(RefCell::new(MovablePlacement::new(placement)));
+    apply_panel_position(&window, movable.borrow().position());
+    let movable_for_map = movable.clone();
+    window.connect_map(move |mapped| {
+        let mapped = mapped.clone();
+        let movable_for_map = movable_for_map.clone();
+        glib::idle_add_local_once(move || {
+            let mut placement = movable_for_map.borrow_mut();
+            if let Some(area) = usable_area {
+                placement.update_bounds(
+                    area,
+                    mapped.allocated_width().max(1),
+                    mapped.allocated_height().max(1),
+                );
+            }
+            apply_panel_position(&mapped, placement.position());
+        });
+    });
+    if let Some(monitor) = monitor {
+        let output =
+            output_for_refresh.or_else(|| monitor.connector().map(|name| name.to_string()));
+        let window_for_geometry = window.clone();
+        let movable_for_geometry = movable.clone();
+        let output_for_geometry = output.clone();
+        monitor.connect_geometry_notify(move |_| {
+            refresh_usable_area(
+                &window_for_geometry,
+                &movable_for_geometry,
+                output_for_geometry.as_deref(),
+            );
+        });
+        let window_for_scale = window.clone();
+        let movable_for_scale = movable.clone();
+        monitor.connect_scale_factor_notify(move |_| {
+            refresh_usable_area(&window_for_scale, &movable_for_scale, output.as_deref());
         });
     }
 
@@ -340,7 +1058,6 @@ fn create_window(
         &realm_css_classes,
     );
 
-    let sent_terminal = Rc::new(Cell::new(false));
     let confirm_entry = Rc::new(RefCell::new(None::<String>));
     let search = Rc::new(RefCell::new(String::new()));
     let displayed = Rc::new(RefCell::new(Vec::<Candidate>::new()));
@@ -350,14 +1067,57 @@ fn create_window(
     let header = adw::HeaderBar::new();
     header.set_show_end_title_buttons(false);
     header.set_show_start_title_buttons(false);
-    header.set_title_widget(Some(&gtk4::Label::new(Some("d2b clipboard picker"))));
+
+    let drag_handle = gtk4::Box::new(Orientation::Horizontal, 0);
+    drag_handle.set_widget_name(DRAG_HANDLE_WIDGET_NAME);
+    drag_handle.add_css_class("drag-handle");
+    drag_handle.set_hexpand(true);
+    drag_handle.set_cursor_from_name(Some("move"));
+    let header_title = gtk4::Label::new(Some("d2b clipboard picker"));
+    header_title.set_hexpand(true);
+    drag_handle.append(&header_title);
+    header.set_title_widget(Some(&drag_handle));
+
+    let drag_origin = Rc::new(Cell::new((0, 0)));
+    let drag = gtk4::GestureDrag::new();
+    drag.set_button(gdk::BUTTON_PRIMARY);
+    let movable_for_drag_begin = movable.clone();
+    let drag_origin_for_begin = drag_origin.clone();
+    drag.connect_drag_begin(move |_, _, _| {
+        drag_origin_for_begin.set(movable_for_drag_begin.borrow().position());
+    });
+    let movable_for_drag = movable.clone();
+    let drag_origin_for_update = drag_origin.clone();
+    let window_for_drag = window.clone();
+    drag.connect_drag_update(move |_, offset_x, offset_y| {
+        let mut placement = movable_for_drag.borrow_mut();
+        placement.drag_from(drag_origin_for_update.get(), offset_x, offset_y);
+        apply_panel_position(&window_for_drag, placement.position());
+    });
+    drag_handle.add_controller(drag);
 
     let close_button = gtk4::Button::builder()
         .icon_name("window-close-symbolic")
         .tooltip_text("Cancel")
         .build();
     close_button.add_css_class("flat");
+
+    let (pin_icon, pin_icon_source) = build_pin_icon(&theme.foreground);
+    let pin_button = gtk4::ToggleButton::builder()
+        .child(&pin_icon)
+        .tooltip_text("Pin picker so focus loss does not close it")
+        .build();
+    pin_button.set_widget_name(PIN_WIDGET_NAME);
+    pin_button.add_css_class("flat");
+    pin_button.add_css_class("pin-toggle");
+    pin_button.update_property(&[
+        gtk4::accessible::Property::Label("Pin picker"),
+        gtk4::accessible::Property::Description(
+            "Keep this picker open when another window receives focus",
+        ),
+    ]);
     header.pack_end(&close_button);
+    header.pack_end(&pin_button);
     main_box.append(&header);
 
     let destination = gtk4::Label::new(Some(&destination_label(&request)));
@@ -419,8 +1179,11 @@ fn create_window(
 
     let scrolled = gtk4::ScrolledWindow::new();
     scrolled.set_policy(gtk4::PolicyType::Never, gtk4::PolicyType::Automatic);
-    scrolled.set_min_content_width(placement.overlay_width);
-    scrolled.set_min_content_height(placement.overlay_height);
+    scrolled.set_vexpand(true);
+    scrolled.set_propagate_natural_width(false);
+    scrolled.set_propagate_natural_height(false);
+    scrolled.set_min_content_width(1);
+    scrolled.set_min_content_height(1);
 
     let list_box = gtk4::ListBox::new();
     list_box.add_css_class("clipboard-list");
@@ -437,27 +1200,75 @@ fn create_window(
         &realm_css_classes,
     );
 
-    let app_for_close = app.clone();
-    let tx_for_close = tx.clone();
-    let sent_for_close = sent_terminal.clone();
-    close_button.connect_clicked(move |_| {
-        send_cancel_once(&tx_for_close, &sent_for_close);
-        app_for_close.quit();
+    let runtime_for_pin = runtime.clone();
+    pin_button.connect_toggled(move |button| {
+        let pinned = button.is_active();
+        if pinned {
+            button.set_tooltip_text(Some("Unpin picker"));
+            button.update_property(&[
+                gtk4::accessible::Property::Label("Unpin picker"),
+                gtk4::accessible::Property::Description(
+                    "Allow this picker to close when another window receives focus",
+                ),
+            ]);
+        } else {
+            button.set_tooltip_text(Some("Pin picker so focus loss does not close it"));
+            button.update_property(&[
+                gtk4::accessible::Property::Label("Pin picker"),
+                gtk4::accessible::Property::Description(
+                    "Keep this picker open when another window receives focus",
+                ),
+            ]);
+        }
+        let transition = runtime_for_pin.lifecycle.borrow_mut().set_pinned(pinned);
+        if transition == FocusTransition::Cancel {
+            send_claimed_cancel_and_quit(&runtime_for_pin);
+        }
     });
 
-    let app_for_close_request = app.clone();
-    let tx_for_close_request = tx.clone();
-    let sent_for_close_request = sent_terminal.clone();
+    let keyboard_release_scheduled = Rc::new(Cell::new(false));
+    let focus_observer_started = Rc::new(Cell::new(false));
+    let focus_controller = gtk4::EventControllerFocus::new();
+    let window_for_focus_enter = window.clone();
+    let runtime_for_focus_enter = runtime.clone();
+    let keyboard_release_for_focus_enter = keyboard_release_scheduled.clone();
+    let focus_observer_for_enter = focus_observer_started.clone();
+    focus_controller.connect_enter(move |controller| {
+        if controller.contains_focus() {
+            info!("picker widget focus entered");
+            observe_picker_focus(
+                &window_for_focus_enter,
+                &runtime_for_focus_enter,
+                &keyboard_release_for_focus_enter,
+                true,
+            );
+            if runtime_for_focus_enter.dismiss_on_focus_loss
+                && !focus_observer_for_enter.replace(true)
+            {
+                monitor_normal_toplevel_activation(
+                    spawn_foreign_toplevel_focus_observer(),
+                    &window_for_focus_enter,
+                    &runtime_for_focus_enter,
+                    keyboard_release_for_focus_enter.clone(),
+                );
+            }
+        }
+    });
+    window.add_controller(focus_controller);
+
+    let runtime_for_close = runtime.clone();
+    close_button.connect_clicked(move |_| {
+        send_cancel_once_and_quit(&runtime_for_close);
+    });
+
+    let runtime_for_close_request = runtime.clone();
     window.connect_close_request(move |_| {
-        send_cancel_once(&tx_for_close_request, &sent_for_close_request);
-        app_for_close_request.quit();
+        send_cancel_once_and_quit(&runtime_for_close_request);
         glib::Propagation::Stop
     });
 
     let activation = ActivationContext {
-        tx: tx.clone(),
-        app: app.clone(),
-        sent_terminal: sent_terminal.clone(),
+        runtime: runtime.clone(),
         confirm_entry: confirm_entry.clone(),
         banner: banner.clone(),
     };
@@ -523,8 +1334,7 @@ fn create_window(
         }
         match key {
             Key::Escape => {
-                send_cancel_once(&activation_for_keys.tx, &activation_for_keys.sent_terminal);
-                activation_for_keys.app.quit();
+                send_cancel_once_and_quit(&activation_for_keys.runtime);
                 glib::Propagation::Stop
             }
             Key::Down | Key::j | Key::J => {
@@ -583,20 +1393,121 @@ fn create_window(
     });
     window.add_controller(key_controller);
 
-    window
+    BuiltPickerWindow {
+        window,
+        root: main_box,
+        pin_button,
+        pin_icon,
+        pin_icon_source,
+    }
+}
+
+fn build_pin_icon(foreground: &str) -> (gtk4::Image, PinIconSource) {
+    let icon_theme = configured_icon_theme();
+    let (image, source) = if icon_theme.has_icon(PIN_ICON_NAME) {
+        info!("using GTK symbolic pin icon {PIN_ICON_NAME}");
+        let icon = icon_theme.lookup_icon(
+            PIN_ICON_NAME,
+            &[],
+            16,
+            1,
+            gtk4::TextDirection::None,
+            gtk4::IconLookupFlags::FORCE_SYMBOLIC,
+        );
+        (
+            gtk4::Image::from_paintable(Some(&icon)),
+            PinIconSource::ThemeSymbolic,
+        )
+    } else {
+        warn!(
+            "GTK icon theme does not provide {PIN_ICON_NAME}; using generated monochrome pin icon"
+        );
+        (
+            gtk4::Image::from_paintable(Some(&generated_pin_texture(foreground))),
+            PinIconSource::GeneratedMonochrome,
+        )
+    };
+    image.set_widget_name(PIN_ICON_WIDGET_NAME);
+    image.set_pixel_size(16);
+    image.set_can_target(false);
+    (image, source)
+}
+
+fn configured_icon_theme() -> gtk4::IconTheme {
+    let icon_theme = gtk4::IconTheme::new();
+    icon_theme.set_theme_name(Some(PIN_ICON_THEME));
+    icon_theme
+}
+
+fn generated_pin_texture(foreground: &str) -> gdk::Texture {
+    const WIDTH: usize = 16;
+    const MASK: [&str; 16] = [
+        "................",
+        "....########....",
+        ".....######.....",
+        ".....######.....",
+        ".....######.....",
+        "....########....",
+        "...##########...",
+        ".......##.......",
+        ".......##.......",
+        ".......##.......",
+        ".......##.......",
+        ".......##.......",
+        ".......##.......",
+        ".......##.......",
+        "................",
+        "................",
+    ];
+    let color = parse_pin_color(foreground);
+    let pixels = generated_pin_pixels(&MASK, color);
+    let bytes = glib::Bytes::from_owned(pixels);
+    gdk::MemoryTexture::new(
+        WIDTH as i32,
+        MASK.len() as i32,
+        gdk::MemoryFormat::R8g8b8a8,
+        &bytes,
+        WIDTH * 4,
+    )
+    .upcast()
+}
+
+fn generated_pin_pixels(mask: &[&str], color: [u8; 3]) -> Vec<u8> {
+    let width = mask.first().map_or(0, |row| row.len());
+    let mut pixels = Vec::with_capacity(width * mask.len() * 4);
+    for row in mask {
+        for pixel in row.bytes() {
+            if pixel == b'#' {
+                pixels.extend_from_slice(&[color[0], color[1], color[2], 0xff]);
+            } else {
+                pixels.extend_from_slice(&[0, 0, 0, 0]);
+            }
+        }
+    }
+    pixels
+}
+
+fn parse_pin_color(foreground: &str) -> [u8; 3] {
+    if foreground.len() == 7 && foreground.starts_with('#') {
+        let red = u8::from_str_radix(&foreground[1..3], 16);
+        let green = u8::from_str_radix(&foreground[3..5], 16);
+        let blue = u8::from_str_radix(&foreground[5..7], 16);
+        if let (Ok(red), Ok(green), Ok(blue)) = (red, green, blue) {
+            return [red, green, blue];
+        }
+    }
+    [0xf8, 0xf8, 0xf2]
 }
 
 #[derive(Clone)]
 struct ActivationContext {
-    tx: PickerTx,
-    app: gtk4::Application,
-    sent_terminal: Rc<Cell<bool>>,
+    runtime: PickerRuntime,
     confirm_entry: Rc<RefCell<Option<String>>>,
     banner: gtk4::Label,
 }
 
 fn activate_candidate(candidate: &Candidate, ctx: &ActivationContext) {
-    if ctx.sent_terminal.get() {
+    if ctx.runtime.lifecycle.borrow().terminal_sent {
         return;
     }
     if candidate.confirmation_required {
@@ -608,20 +1519,85 @@ fn activate_candidate(candidate: &Candidate, ctx: &ActivationContext) {
             return;
         }
     }
-    ctx.sent_terminal.set(true);
-    if let Err(_err) = ctx.tx.select(&candidate.entry_id) {
+    if ctx.runtime.lifecycle.borrow_mut().claim_terminal()
+        && let Some(tx) = &ctx.runtime.tx
+        && let Err(_err) = tx.select(&candidate.entry_id)
+    {
         warn!("failed to send selection to d2b-clipd");
     }
-    ctx.app.quit();
+    ctx.runtime.app.quit();
 }
 
-fn send_cancel_once(tx: &PickerTx, sent_terminal: &Rc<Cell<bool>>) {
-    if sent_terminal.replace(true) {
-        return;
-    }
-    if let Err(_err) = tx.cancel() {
+fn send_cancel_once_and_quit(runtime: &PickerRuntime) {
+    if runtime.lifecycle.borrow_mut().claim_terminal()
+        && let Some(tx) = &runtime.tx
+        && let Err(_err) = tx.cancel()
+    {
         warn!("failed to send cancellation to d2b-clipd");
     }
+    runtime.app.quit();
+}
+
+fn observe_picker_focus(
+    window: &adw::ApplicationWindow,
+    runtime: &PickerRuntime,
+    keyboard_release_scheduled: &Cell<bool>,
+    focused: bool,
+) {
+    let transition = if runtime.dismiss_on_focus_loss {
+        runtime.lifecycle.borrow_mut().focus_changed(focused)
+    } else {
+        FocusTransition::None
+    };
+    if focused && !keyboard_release_scheduled.replace(true) {
+        let window = window.clone();
+        glib::idle_add_local_once(move || {
+            window.set_keyboard_mode(PICKER_STEADY_KEYBOARD_MODE);
+        });
+    }
+    if transition == FocusTransition::Cancel {
+        send_claimed_cancel_and_quit(runtime);
+    }
+}
+
+fn monitor_normal_toplevel_activation(
+    receiver: mpsc::Receiver<FocusObserverEvent>,
+    window: &adw::ApplicationWindow,
+    runtime: &PickerRuntime,
+    keyboard_release_scheduled: Rc<Cell<bool>>,
+) {
+    let window = window.clone();
+    let runtime = runtime.clone();
+    glib::timeout_add_local(Duration::from_millis(25), move || {
+        match receiver.try_recv() {
+            Ok(FocusObserverEvent::NormalToplevelActivated) => {
+                info!("normal Wayland toplevel activated after picker bootstrap");
+                observe_picker_focus(&window, &runtime, &keyboard_release_scheduled, false);
+                if runtime.lifecycle.borrow().terminal_sent {
+                    return glib::ControlFlow::Break;
+                }
+            }
+            Ok(FocusObserverEvent::Unavailable(error)) => {
+                warn!("normal-toplevel focus observer unavailable: {error}");
+                return glib::ControlFlow::Break;
+            }
+            Err(mpsc::TryRecvError::Empty) => {}
+            Err(mpsc::TryRecvError::Disconnected) => {
+                warn!("normal-toplevel focus observer stopped unexpectedly");
+                return glib::ControlFlow::Break;
+            }
+        }
+        glib::ControlFlow::Continue
+    });
+}
+
+fn send_claimed_cancel_and_quit(runtime: &PickerRuntime) {
+    if let Some(tx) = &runtime.tx
+        && let Err(_err) = tx.cancel()
+    {
+        warn!("failed to send cancellation to d2b-clipd");
+    }
+    runtime.app.quit();
 }
 
 fn update_search(
@@ -639,6 +1615,30 @@ fn update_search(
         label.set_text(&format!("Search: {query}"));
     }
     rebuild_grouped_rows(list_box, candidates, &query, displayed, realm_css_classes);
+}
+
+fn apply_panel_position(window: &impl IsA<gtk4::Window>, position: (i32, i32)) {
+    window.set_margin(Edge::Left, position.0);
+    window.set_margin(Edge::Top, position.1);
+}
+
+fn refresh_usable_area(
+    window: &adw::ApplicationWindow,
+    movable: &Rc<RefCell<MovablePlacement>>,
+    output: Option<&str>,
+) {
+    match WorkAreaProbe::capture_timeout(output, Duration::from_millis(500)) {
+        Ok(area) => {
+            let mut placement = movable.borrow_mut();
+            placement.update_bounds(
+                area,
+                window.allocated_width().max(1),
+                window.allocated_height().max(1),
+            );
+            apply_panel_position(window, placement.position());
+        }
+        Err(error) => warn!("failed to refresh compositor usable area: {error}"),
+    }
 }
 
 fn find_monitor(output: &str) -> Option<gdk::Monitor> {
@@ -1102,6 +2102,7 @@ mod theme_tests {
         assert!(css.contains("background: alpha(#3584e4, 0.14);"));
         assert!(css.contains("border-left-width: 5px;"));
         assert!(css.contains(".realm-label"));
+        assert!(css.contains(".pin-toggle:checked"));
     }
 
     #[test]
@@ -1243,5 +2244,88 @@ mod theme_tests {
 
         palette.background = "url(file:///tmp/x)".to_owned();
         assert!(palette.validate().is_err());
+    }
+
+    #[test]
+    fn startup_inactive_transition_is_ignored_then_focus_loss_cancels_once() {
+        let mut lifecycle = FocusLifecycle::default();
+
+        assert_eq!(
+            lifecycle.focus_changed(false),
+            FocusTransition::None,
+            "startup inactivity must not dismiss the picker"
+        );
+        assert_eq!(lifecycle.focus_changed(true), FocusTransition::None);
+        assert_eq!(lifecycle.focus_changed(false), FocusTransition::Cancel);
+        assert_eq!(lifecycle.focus_changed(false), FocusTransition::None);
+        assert!(!lifecycle.claim_terminal(), "cancel must be claimed once");
+    }
+
+    #[test]
+    fn picker_bootstraps_focus_then_uses_on_demand_keyboard_interactivity() {
+        assert_eq!(PICKER_BOOTSTRAP_KEYBOARD_MODE, KeyboardMode::Exclusive);
+        assert_eq!(PICKER_STEADY_KEYBOARD_MODE, KeyboardMode::OnDemand);
+        assert_eq!(PIN_ICON_NAME, "view-pin-symbolic");
+        assert_eq!(PIN_ICON_THEME, "Adwaita");
+        assert_eq!(parse_pin_color("#f8f8f2"), [0xf8, 0xf8, 0xf2]);
+        assert_eq!(parse_pin_color("currentColor"), [0xf8, 0xf8, 0xf2]);
+    }
+
+    #[test]
+    fn generated_pin_fallback_is_deterministic_and_monochrome() {
+        let mask = ["#.", ".#"];
+        let pixels = generated_pin_pixels(&mask, [10, 20, 30]);
+
+        assert_eq!(pixels.len(), 16);
+        assert_eq!(&pixels[0..4], &[10, 20, 30, 255]);
+        assert_eq!(&pixels[4..8], &[0, 0, 0, 0]);
+        assert_eq!(&pixels[8..12], &[0, 0, 0, 0]);
+        assert_eq!(&pixels[12..16], &[10, 20, 30, 255]);
+    }
+
+    #[test]
+    fn pin_suppresses_focus_loss_and_unpinning_while_inactive_cancels() {
+        let mut lifecycle = FocusLifecycle::default();
+
+        lifecycle.focus_changed(true);
+        assert_eq!(lifecycle.set_pinned(true), FocusTransition::None);
+        assert!(lifecycle.is_pinned());
+        assert_eq!(lifecycle.focus_changed(false), FocusTransition::None);
+        assert_eq!(lifecycle.set_pinned(false), FocusTransition::Cancel);
+        assert_eq!(lifecycle.set_pinned(false), FocusTransition::None);
+    }
+
+    #[test]
+    fn explicit_terminal_action_prevents_focus_loss_cancel() {
+        let mut lifecycle = FocusLifecycle::default();
+
+        lifecycle.focus_changed(true);
+        assert!(lifecycle.claim_terminal());
+        assert_eq!(lifecycle.focus_changed(false), FocusTransition::None);
+        assert!(!lifecycle.claim_terminal());
+    }
+
+    #[test]
+    fn render_sample_contract_is_synthetic_and_visually_varied() {
+        let request = render_sample_request();
+        let realms = request
+            .candidates
+            .iter()
+            .map(|candidate| candidate.source_realm.as_str())
+            .collect::<std::collections::HashSet<_>>();
+
+        assert_eq!(request.request_id, "synthetic-render-request");
+        request.validate().expect("synthetic request must be valid");
+        assert!(request.placement_hints.is_some());
+        assert!(realms.len() >= 3);
+        assert!(
+            request
+                .candidates
+                .iter()
+                .any(|candidate| candidate.content_type == "image/png")
+        );
+        assert!(request.candidates.iter().any(|candidate| {
+            candidate.source_isolation_posture == PresentationIsolationPosture::UnsafeLocal
+        }));
     }
 }

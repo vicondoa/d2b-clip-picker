@@ -127,6 +127,42 @@ fn no_compositor_specific_ipc() {
 }
 
 #[test]
+fn foreign_toplevel_observer_is_presentation_lifecycle_only() {
+    let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src/ui.rs");
+    let source = fs::read_to_string(path).expect("read UI source");
+    let observer_and_rest = source
+        .split_once("mod foreign_toplevel_focus {")
+        .expect("embedded focus observer")
+        .1;
+    let content = observer_and_rest
+        .split_once("#[derive(Debug, Default)]\npub struct FocusLifecycle")
+        .expect("end of embedded focus observer")
+        .0;
+
+    assert!(content.contains("ZwlrForeignToplevelManagerV1"));
+    assert!(content.contains("State::Activated"));
+    for forbidden in [
+        "Event::Title",
+        "Event::AppId",
+        "Event::OutputEnter",
+        "Event::OutputLeave",
+        ".activate(",
+        ".close(",
+        ".set_rectangle(",
+        ".set_fullscreen(",
+        ".unset_fullscreen(",
+        ".set_maximized(",
+        ".unset_maximized(",
+        ".set_minimized(",
+    ] {
+        assert!(
+            !content.contains(forbidden),
+            "foreign-toplevel observer exceeds lifecycle-only boundary with {forbidden}"
+        );
+    }
+}
+
+#[test]
 fn no_persistence_or_history_store() {
     assert_source_excludes(
         "persistence",

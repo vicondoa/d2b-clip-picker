@@ -2,8 +2,29 @@
 
 ## [Unreleased]
 
+### Added
+
+- Add an accessible, stateful Pin control that keeps the current picker request
+  open across focus changes without granting clipboard authority.
+- Add empty-title-chrome dragging clamped to the compositor-provided usable
+  Layer Shell area, with per-request pointer/output placement reset.
+- Add a bounded `--render-sample <PNG>` mode that renders deterministic
+  multi-realm synthetic data through the production GTK widget builder without
+  live IPC.
+
+### Changed
+
+- Bootstrap exclusive keyboard focus so search works immediately under Niri,
+  then switch to on-demand interactivity so focus can transfer and cancel an
+  unpinned request exactly once after a compositor-agnostic normal-toplevel
+  activation signal. The observer consumes no window identity or control data.
+- Stop ignoring Layer Shell exclusive zones so reserved surfaces such as Waybar
+  remain outside the picker's usable placement area.
+
 ### Fixed
 
+- Preserve default and pointer-derived placement while compositor usable bounds
+  are unavailable, then clamp only after real output bounds arrive.
 - Accept the bounded canonical-target and clipboard capability-preflight fields
   emitted by deployed d2b protocol-v1 frames while keeping them
   presentation-only and redacted.

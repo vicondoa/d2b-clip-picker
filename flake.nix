@@ -33,8 +33,12 @@
             inherit version;
             src = cleanSrc;
             strictDeps = true;
-            nativeBuildInputs = with pkgs; [ pkg-config ];
+            nativeBuildInputs = with pkgs; [
+              pkg-config
+              wrapGAppsHook4
+            ];
             buildInputs = with pkgs; [
+              adwaita-icon-theme
               gtk4
               dbus
               glib
@@ -47,6 +51,11 @@
             commonArgs
             // {
               inherit cargoArtifacts;
+              preFixup = ''
+                gappsWrapperArgs+=(
+                  --prefix XDG_DATA_DIRS : "${pkgs.adwaita-icon-theme}/share"
+                )
+              '';
             }
           );
           sourceTarball = pkgs.runCommand "d2b-clip-picker-${version}-source" { } ''
@@ -78,6 +87,9 @@
               rust-analyzer
               clippy
             ];
+            shellHook = ''
+              export XDG_DATA_DIRS="${pkgs.adwaita-icon-theme}/share''${XDG_DATA_DIRS:+:$XDG_DATA_DIRS}"
+            '';
           };
           checks = {
             inherit d2b-clip-picker;

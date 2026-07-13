@@ -30,6 +30,8 @@ The picker owns only presentation:
 - safe text preview rendering;
 - host thumbnails supplied by `d2b-clipd`;
 - keyboard and mouse navigation;
+- compositor-agnostic observation of normal-toplevel `Activated` state solely
+  for transient focus-loss cancellation;
 - Escape, close, and cancel behavior;
 - `Select` / `Cancel` messages over the inherited socketpair.
 
@@ -47,7 +49,27 @@ The picker must never:
 The picker never infers realm, provider, or isolation identity from an app id.
 Those labels are optional presentation metadata supplied by `d2b-clipd`.
 Selection fulfillment remains exclusively in `d2b-clipd` after the picker sends
-`Select`.
+`Select`. The focus observer discards foreign-toplevel titles, app ids, and
+outputs and exposes no compositor action or control request.
+
+## Picker interaction
+
+Each request opens an unpinned, fixed-size panel. After the panel has received
+focus, moving focus to another application cancels the request and closes the
+picker. The accessible **Pin** toggle in the top-right header keeps that request
+open across focus changes; it does not grant any clipboard operation or change
+the existing Select, Escape, close, or socket-shutdown behavior.
+
+Type to search, use Up/Down or `j`/`k` to navigate, Enter to select, and Escape
+to cancel. The picker bootstraps with exclusive keyboard interactivity so Niri
+focuses it on map, then immediately switches to on-demand interactivity after
+activation so focus can transfer normally.
+
+Drag the title area between the header controls to move the panel. Placement is
+clamped to the compositor-provided usable output area, including Layer Shell
+exclusive zones such as Waybar. Dragged coordinates are never persisted: every
+request starts from its pointer/output placement hints. The picker does not use
+Niri IPC or assume a bar height.
 
 ## Protocol
 
@@ -161,6 +183,38 @@ Security assumptions and reporting guidance are in [SECURITY.md](SECURITY.md).
 
 Run the binary only under a supervising fake or real `d2b-clipd` process that
 provides `--ipc-fd`.
+
+### Deterministic UI render
+
+From an active Wayland compositor with GTK Layer Shell support (including
+Niri), render synthetic review data through the production widget builder:
+
+```bash
+nix develop --command cargo run -- --render-sample ./clip-picker-sample.png
+```
+
+The command uses no live IPC or clipboard data, requires an explicit `.png`
+path, and exits within ten seconds. It checks the 420×520 PNG signature,
+dimensions, non-uniform content, and 5 MB size cap before succeeding. The sample
+includes multiple realms, provider/isolation postures, text and image
+placeholders, and the unpinned pin icon. Generated PNGs are review artifacts
+and must remain untracked.
+
+For live checks, recover the compositor environment and opt in explicitly:
+
+```bash
+export XDG_RUNTIME_DIR=/run/user/$(id -u)
+export WAYLAND_DISPLAY=wayland-1
+D2B_RUN_WAYLAND_UI_TESTS=1 nix develop --command \
+  cargo test --test binary wayland_ -- --nocapture
+NIRI_SOCKET=$(find "$XDG_RUNTIME_DIR" -maxdepth 1 -type s \
+  -name 'niri.wayland-1.*.sock' -print -quit) \
+D2B_RUN_NIRI_FOCUS_TESTS=1 nix develop --command \
+  cargo test --test binary niri_focus_bootstrap_transitions_then_cancels_once -- --nocapture
+```
+
+The Niri test requires an unlocked active Niri session plus `foot`; Niri IPC is
+used only by this test harness, never by the picker.
 
 ## CI and releases
 

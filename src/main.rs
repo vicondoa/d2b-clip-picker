@@ -1,5 +1,5 @@
-use clap::Parser;
-use d2b_clip_picker::placement::PickerPlacement;
+use clap::{ArgGroup, Parser};
+use d2b_clip_picker::placement::{PickerPlacement, WorkAreaProbe};
 use d2b_clip_picker::protocol::{IpcPeer, OpenRequest};
 use d2b_clip_picker::ui;
 use log::{debug, error, info, warn};
@@ -14,19 +14,28 @@ use std::time::Duration;
 #[command(
     name = "d2b-clip-picker",
     version,
-    about = "UI-only d2b clipboard picker"
+    about = "UI-only d2b clipboard picker",
+    group(
+        ArgGroup::new("mode")
+            .required(true)
+            .args(["ipc_fd", "render_sample"])
+    )
 )]
 struct Args {
     /// Inherited socketpair file descriptor from d2b-clipd.
     #[arg(long = "ipc-fd")]
-    ipc_fd: i32,
+    ipc_fd: Option<i32>,
     /// Test harness only: activate the first rendered row after the UI maps.
-    #[arg(long = "test-select-first", hide = true)]
+    #[arg(long = "test-select-first", hide = true, requires = "ipc_fd")]
     test_select_first: bool,
 
     /// Optional generic JSON palette for UI shell colors.
     #[arg(long = "theme-json", value_name = "PATH")]
     theme_json: Option<PathBuf>,
+
+    /// Render deterministic synthetic picker data to an explicit PNG path.
+    #[arg(long = "render-sample", value_name = "PNG")]
+    render_sample: Option<PathBuf>,
 }
 
 fn main() {
@@ -44,15 +53,25 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         .ok();
 
     let args = Args::parse();
-    if args.ipc_fd <= 2 {
+    let theme = match args.theme_json.as_deref() {
+        Some(path) => ui::ThemePalette::from_json_file(path)?,
+        None => ui::ThemePalette::default(),
+    };
+    if let Some(output) = args.render_sample.as_deref() {
+        ui::render_sample(output, theme)?;
+        return Ok(());
+    }
+
+    let ipc_fd = args.ipc_fd.expect("clap requires an execution mode");
+    if ipc_fd <= 2 {
         return Err("--ipc-fd must be greater than 2".into());
     }
 
-    let stream = unsafe { UnixStream::from_raw_fd(args.ipc_fd) };
+    let stream = unsafe { UnixStream::from_raw_fd(ipc_fd) };
     let flags = fcntl_getfd(&stream).map_err(|error| {
         format!(
             "--ipc-fd {} is not an open inherited file descriptor: {error}",
-            args.ipc_fd,
+            ipc_fd,
         )
     })?;
     fcntl_setfd(&stream, flags | FdFlags::CLOEXEC)
@@ -67,15 +86,26 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     };
 
-    let placement = choose_placement(&request);
+    let mut placement = choose_placement(&request);
+    refine_usable_area(&mut placement);
     debug!("starting picker UI");
-    let theme = match args.theme_json.as_deref() {
-        Some(path) => ui::ThemePalette::from_json_file(path)?,
-        None => ui::ThemePalette::default(),
-    };
 
     ui::run_picker(request, peer, placement, args.test_select_first, theme)?;
     Ok(())
+}
+
+fn refine_usable_area(placement: &mut PickerPlacement) {
+    match WorkAreaProbe::capture_timeout(placement.output.as_deref(), Duration::from_millis(500)) {
+        Ok(area) => {
+            placement.geometry.output_width = area.width;
+            placement.geometry.output_height = area.height;
+            info!(
+                "compositor usable output area width={} height={} output={:?}",
+                area.width, area.height, placement.output
+            );
+        }
+        Err(error) => warn!("usable output area probe failed, using placement dimensions: {error}"),
+    }
 }
 
 fn choose_placement(request: &OpenRequest) -> PickerPlacement {
@@ -234,5 +264,33 @@ mod tests {
         assert_eq!(placement.output.as_deref(), Some("DP-3"));
         assert_eq!(placement.geometry.x, 24.0);
         assert_eq!(placement.geometry.y, 24.0);
+    }
+
+    #[test]
+    fn render_mode_requires_an_explicit_png_without_ipc() {
+        let args = Args::try_parse_from(["d2b-clip-picker", "--render-sample", "sample.png"])
+            .expect("render arguments");
+
+        assert_eq!(args.render_sample, Some(PathBuf::from("sample.png")));
+        assert!(args.ipc_fd.is_none());
+    }
+
+    #[test]
+    fn legacy_ipc_invocation_remains_available_and_modes_are_exclusive() {
+        let args = Args::try_parse_from(["d2b-clip-picker", "--ipc-fd", "7"])
+            .expect("legacy ipc arguments");
+        assert_eq!(args.ipc_fd, Some(7));
+        assert!(args.render_sample.is_none());
+
+        assert!(
+            Args::try_parse_from([
+                "d2b-clip-picker",
+                "--ipc-fd",
+                "7",
+                "--render-sample",
+                "sample.png",
+            ])
+            .is_err()
+        );
     }
 }
