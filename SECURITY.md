@@ -23,6 +23,12 @@ The picker deliberately has no:
 - persistence, history, or credential store;
 - policy engine or app-id identity inference.
 
+The picker observes only the compositor-agnostic
+`zwlr_foreign_toplevel_handle_v1::State::Activated` lifecycle bit after its
+initial focus baseline. It ignores titles, app ids, outputs, and every
+foreign-toplevel control request; the signal can only dismiss an unpinned
+presentation request through the existing send-once `Cancel` path.
+
 Protocol provider, posture, realm, application, color, and preview fields are
 presentation-only. They cannot authorize a transfer or change the candidates
 that `d2b-clipd` supplied.

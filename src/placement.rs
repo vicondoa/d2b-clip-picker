@@ -24,6 +24,105 @@ pub struct Placement {
     pub output_height: i32,
 }
 
+pub const PANEL_EDGE_GAP: i32 = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct UsableArea {
+    pub width: i32,
+    pub height: i32,
+}
+
+impl UsableArea {
+    pub fn new(width: i32, height: i32) -> Option<Self> {
+        (width > 0 && height > 0).then_some(Self { width, height })
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct MovablePlacement {
+    initial_x: f64,
+    initial_y: f64,
+    x: i32,
+    y: i32,
+    panel_width: i32,
+    panel_height: i32,
+    usable_area: Option<UsableArea>,
+}
+
+impl MovablePlacement {
+    pub fn new(placement: Placement) -> Self {
+        let usable_area = UsableArea::new(placement.output_width, placement.output_height);
+        let mut movable = Self {
+            initial_x: placement.x,
+            initial_y: placement.y,
+            x: placement.x.round() as i32,
+            y: placement.y.round() as i32,
+            panel_width: placement.overlay_width,
+            panel_height: placement.overlay_height,
+            usable_area,
+        };
+        movable.reset();
+        movable
+    }
+
+    pub fn position(&self) -> (i32, i32) {
+        (self.x, self.y)
+    }
+
+    pub fn drag_from(&mut self, origin: (i32, i32), offset_x: f64, offset_y: f64) {
+        let x = origin.0 as f64 + offset_x;
+        let y = origin.1 as f64 + offset_y;
+        (self.x, self.y) = match self.usable_area {
+            Some(usable_area) => {
+                clamp_panel_position(x, y, self.panel_width, self.panel_height, usable_area)
+            }
+            None => (x.round() as i32, y.round() as i32),
+        };
+    }
+
+    pub fn update_bounds(&mut self, usable_area: UsableArea, panel_width: i32, panel_height: i32) {
+        self.usable_area = Some(usable_area);
+        self.panel_width = panel_width;
+        self.panel_height = panel_height;
+        (self.x, self.y) = clamp_panel_position(
+            self.x as f64,
+            self.y as f64,
+            self.panel_width,
+            self.panel_height,
+            usable_area,
+        );
+    }
+
+    pub fn reset(&mut self) {
+        (self.x, self.y) = match self.usable_area {
+            Some(usable_area) => clamp_panel_position(
+                self.initial_x,
+                self.initial_y,
+                self.panel_width,
+                self.panel_height,
+                usable_area,
+            ),
+            None => (self.initial_x.round() as i32, self.initial_y.round() as i32),
+        };
+    }
+}
+
+pub fn clamp_panel_position(
+    x: f64,
+    y: f64,
+    panel_width: i32,
+    panel_height: i32,
+    usable_area: UsableArea,
+) -> (i32, i32) {
+    let min = PANEL_EDGE_GAP;
+    let max_x = (usable_area.width - panel_width - PANEL_EDGE_GAP).max(min);
+    let max_y = (usable_area.height - panel_height - PANEL_EDGE_GAP).max(min);
+    (
+        (x.round() as i32).clamp(min, max_x),
+        (y.round() as i32).clamp(min, max_y),
+    )
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct PickerPlacement {
     pub geometry: Placement,
@@ -125,6 +224,48 @@ impl PointerCapture {
     }
 }
 
+pub struct WorkAreaProbe;
+
+impl WorkAreaProbe {
+    pub fn capture_timeout(
+        output_name: Option<&str>,
+        timeout: Duration,
+    ) -> Result<UsableArea, Box<dyn std::error::Error>> {
+        let conn = Connection::connect_to_env()?;
+        let (globals, mut queue): (GlobalList, EventQueue<State>) = registry_queue_init(&conn)?;
+        let mut state = State::new();
+        queue.roundtrip(&mut state)?;
+        init_protocols(&globals, &queue, &mut state)?;
+        queue.roundtrip(&mut state)?;
+
+        let output = match output_name {
+            Some(name) => Some(
+                state
+                    .outputs
+                    .iter()
+                    .find(|(id, _)| {
+                        state
+                            .output_names
+                            .get(id)
+                            .is_some_and(|value| value == name)
+                    })
+                    .map(|(_, output)| output.clone())
+                    .ok_or_else(|| format!("Wayland output {name} is unavailable"))?,
+            ),
+            None => None,
+        };
+        setup_work_area_layer(&mut state, &queue, output.as_ref())?;
+
+        let deadline = Instant::now() + timeout;
+        while state.monitor_width <= 0 || state.monitor_height <= 0 {
+            dispatch_once_until(&mut queue, &mut state, deadline)?;
+        }
+        cleanup_capture_layer(&mut state);
+        UsableArea::new(state.monitor_width, state.monitor_height)
+            .ok_or_else(|| "compositor returned an empty usable output area".into())
+    }
+}
+
 fn dispatch_once_until(
     queue: &mut EventQueue<State>,
     state: &mut State,
@@ -218,6 +359,7 @@ pub struct State {
     transparent_buffer: Option<wl_buffer::WlBuffer>,
     capture_layer_surface: Option<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1>,
     capture_viewport: Option<wp_viewport::WpViewport>,
+    attach_buffer_after_configure: bool,
     overlay_width: i32,
     overlay_height: i32,
     monitor_width: i32,
@@ -247,6 +389,7 @@ impl State {
             transparent_buffer: None,
             capture_layer_surface: None,
             capture_viewport: None,
+            attach_buffer_after_configure: true,
             overlay_width: 420,
             overlay_height: 520,
             monitor_width: 0,
@@ -309,7 +452,7 @@ fn setup_capture_layer(
         &queue.handle(),
         (),
     );
-    capture_layer_surface.set_exclusive_zone(-1);
+    capture_layer_surface.set_exclusive_zone(0);
     capture_layer_surface.set_anchor(
         zwlr_layer_surface_v1::Anchor::Top
             | zwlr_layer_surface_v1::Anchor::Left
@@ -320,6 +463,41 @@ fn setup_capture_layer(
         .set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
     state.capture_layer_surface = Some(capture_layer_surface);
     capture_surface.commit();
+    Ok(())
+}
+
+fn setup_work_area_layer(
+    state: &mut State,
+    queue: &EventQueue<State>,
+    output: Option<&wl_output::WlOutput>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    state.attach_buffer_after_configure = false;
+    let compositor = state
+        .compositor
+        .as_ref()
+        .ok_or("wl_compositor missing")?
+        .clone();
+    let surface = compositor.create_surface(&queue.handle(), ());
+    state.capture_surface = Some(surface.clone());
+    let layer_shell = state.layer_shell.as_ref().ok_or("layer shell missing")?;
+    let layer_surface = layer_shell.get_layer_surface(
+        &surface,
+        output,
+        zwlr_layer_shell_v1::Layer::Top,
+        "d2b-clip-picker-work-area".to_string(),
+        &queue.handle(),
+        (),
+    );
+    layer_surface.set_exclusive_zone(0);
+    layer_surface.set_anchor(
+        zwlr_layer_surface_v1::Anchor::Top
+            | zwlr_layer_surface_v1::Anchor::Left
+            | zwlr_layer_surface_v1::Anchor::Right
+            | zwlr_layer_surface_v1::Anchor::Bottom,
+    );
+    layer_surface.set_keyboard_interactivity(zwlr_layer_surface_v1::KeyboardInteractivity::None);
+    state.capture_layer_surface = Some(layer_surface);
+    surface.commit();
     Ok(())
 }
 
@@ -488,7 +666,7 @@ impl Dispatch<zwlr_layer_surface_v1::ZwlrLayerSurfaceV1, ()> for State {
                 state.monitor_width = width as i32;
                 state.monitor_height = height as i32;
             }
-            if state.capture_surface.is_some() {
+            if state.capture_surface.is_some() && state.attach_buffer_after_configure {
                 if state.viewporter.is_none()
                     && let Err(error) =
                         create_transparent_buffer(state, qhandle, width as i32, height as i32)
@@ -563,5 +741,87 @@ mod tests {
             pointer_poll_action(rustix::event::PollFlags::IN | rustix::event::PollFlags::HUP);
 
         assert_eq!(action, PointerPollAction::Read);
+    }
+
+    #[test]
+    fn drag_clamps_every_picker_edge_to_the_usable_area() {
+        let mut placement = MovablePlacement::new(Placement {
+            x: 400.0,
+            y: 300.0,
+            overlay_width: 420,
+            overlay_height: 520,
+            output_width: 1920,
+            output_height: 1040,
+        });
+
+        placement.drag_from(placement.position(), -10_000.0, -10_000.0);
+        assert_eq!(placement.position(), (PANEL_EDGE_GAP, PANEL_EDGE_GAP));
+        placement.drag_from(placement.position(), 10_000.0, 10_000.0);
+        assert_eq!(placement.position(), (1492, 512));
+    }
+
+    #[test]
+    fn output_change_reclamps_without_changing_the_initial_request_position() {
+        let mut placement = MovablePlacement::new(Placement {
+            x: 1200.0,
+            y: 700.0,
+            overlay_width: 420,
+            overlay_height: 520,
+            output_width: 1920,
+            output_height: 1080,
+        });
+
+        placement.update_bounds(UsableArea::new(1280, 720).unwrap(), 420, 520);
+        assert_eq!(placement.position(), (852, 192));
+        placement.update_bounds(UsableArea::new(2560, 1400).unwrap(), 420, 520);
+        placement.reset();
+        assert_eq!(placement.position(), (1200, 700));
+    }
+
+    #[test]
+    fn each_request_starts_from_its_own_pointer_placement() {
+        let first = MovablePlacement::new(Placement {
+            x: 80.0,
+            y: 90.0,
+            output_width: 1920,
+            output_height: 1080,
+            ..Placement::default()
+        });
+        let second = MovablePlacement::new(Placement {
+            x: 900.0,
+            y: 400.0,
+            output_width: 1920,
+            output_height: 1080,
+            ..Placement::default()
+        });
+
+        assert_eq!(first.position(), (80, 90));
+        assert_eq!(second.position(), (900, 400));
+    }
+
+    #[test]
+    fn unknown_output_dimensions_preserve_default_request_position() {
+        let placement = MovablePlacement::new(Placement::default());
+
+        assert_eq!(placement.position(), (24, 24));
+    }
+
+    #[test]
+    fn unknown_output_dimensions_preserve_pointer_until_real_bounds_arrive() {
+        let mut placement = MovablePlacement::new(Placement {
+            x: 1440.0,
+            y: 760.0,
+            output_width: 0,
+            output_height: 0,
+            ..Placement::default()
+        });
+
+        assert_eq!(placement.position(), (1440, 760));
+        placement.drag_from(placement.position(), 100.0, 50.0);
+        assert_eq!(placement.position(), (1540, 810));
+        placement.reset();
+        assert_eq!(placement.position(), (1440, 760));
+        placement.update_bounds(UsableArea::new(1280, 720).unwrap(), 420, 520);
+        assert_eq!(placement.position(), (852, 192));
     }
 }
